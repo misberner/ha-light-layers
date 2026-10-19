@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Light with overrides",
+        "description": "A stand-in for a real light. Its commands set the light's normal state; overrides show something else for a while, then the light returns to the normal state as it is by then.",
+        "data": {
+          "name": "Name",
+          "light": "Real light",
+          "minutes": "Default override length"
+        }
+      }
+    },
+    "error": {
+      "layered": "That is already a light with overrides; pick the real light."
+    },
+    "abort": {
+      "already_configured": "This light already has a stand-in."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "minutes": "Default override length"
+        }
+      }
+    }
+  },
+  "services": {
+    "override": {
+      "name": "Override",
+      "description": "Show something else on the light for a while. Setting the same key again extends it; the highest priority wins. When it ends the light shows its normal state as it is then.",
+      "fields": {
+        "key": {"name": "Key", "description": "Names the override, so it can be extended or cancelled."},
+        "minutes": {"name": "Minutes", "description": "How long; default from the light's options."},
+        "priority": {"name": "Priority", "description": "Higher wins while several are active."},
+        "off": {"name": "Off", "description": "Keep the light off instead."},
+        "brightness_pct": {"name": "Brightness (%)", "description": "Brightness in percent."},
+        "brightness": {"name": "Brightness", "description": "Brightness 0-255."},
+        "color_temp_kelvin": {"name": "Colour temperature", "description": "In kelvin."},
+        "rgb_color": {"name": "Colour", "description": "RGB colour."},
+        "effect": {"name": "Effect", "description": "Light effect."}
+      }
+    },
+    "cancel": {
+      "name": "Cancel override",
+      "description": "End an override now (all of them without a key).",
+      "fields": {
+        "key": {"name": "Key", "description": "The override to end; empty ends all."}
+      }
+    }
+  }
+}
