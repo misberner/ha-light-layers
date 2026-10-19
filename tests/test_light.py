@@ -37,7 +37,7 @@ class Clock:
 @pytest.fixture
 def clock():
     c = Clock()
-    with patch.object(layered.time, "time", c.time):
+    with patch.object(layered, "_seconds", c.time):
         yield c
 
 
@@ -223,3 +223,19 @@ async def test_config_flow(hass):
         layered_flow["flow_id"], {"name": "Loop", "light": LAYERED}
     )
     assert layered_flow["errors"] == {"light": "layered"}
+
+
+async def test_automation_going_around_the_stand_in_is_recorded(hass, clock):
+    """The switch-off script targets the real light: off is recorded, the override stays."""
+    await setup(hass, brightness=15)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
+    await advance(hass, clock, 1)
+    await hass.services.async_call(
+        "light", "turn_off", {"entity_id": REAL}, blocking=True,
+        context=Context(parent_id="some-automation-run"),
+    )  # fmt: skip
+    await hass.async_block_till_done()
+    assert bright(hass, REAL) == ("on", 153)  # the override is back
+    assert hass.states.get(LAYERED).state == "off"  # the normal state is off now
+    await advance(hass, clock, 4.5)
+    assert hass.states.get(REAL).state == "off"

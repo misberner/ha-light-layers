@@ -89,8 +89,12 @@ OVERRIDE_SCHEMA = {
 CANCEL_SCHEMA = {vol.Optional(ATTR_KEY): cv.string}
 
 
+def _seconds() -> float:
+    return time.time()
+
+
 def _minutes() -> float:
-    return time.time() / 60.0
+    return _seconds() / 60.0
 
 
 def attrs_of(state: State) -> dict[str, Any]:
@@ -330,7 +334,7 @@ class LayeredLight(LightEntity, RestoreEntity):
                 data[ATTR_BRIGHTNESS] = round(data.pop("brightness_pct") * 255 / 100)
             context = Context(parent_id=self._context.id if self._context else None)
             self._own = (self._own + [context.id])[-OWN_CONTEXTS:]
-            self._sent_at = time.time()
+            self._sent_at = _seconds()
             await self.hass.services.async_call(
                 "light", service, {ATTR_ENTITY_ID: self._real, **data}, context=context
             )
@@ -352,13 +356,21 @@ class LayeredLight(LightEntity, RestoreEntity):
             return
         if new.context.id in self._own:
             return
-        if time.time() - self._sent_at < self._cfg["own_change_seconds"]:
+        if _seconds() - self._sent_at < self._cfg["own_change_seconds"]:
             return  # still settling after our command (e.g. Zigbee reports without our context)
         if _matches(new, self._layer["applied"]):
             return
-        # changed by hand at the light (or by something bypassing us): that is the base now
+        on = new.state == STATE_ON
+        if new.context.parent_id:
+            # an automation or script went around the stand-in: an ordinary command,
+            # recorded in the base; a running override goes back on the light
+            logic.command(self._layer, "turn_on" if on else "turn_off", attrs_of(new))
+            self._layer["applied"] = {"on": on, "attrs": attrs_of(new)}
+            self.hass.async_create_task(self._apply())
+            return
+        # changed by hand at the light (switch, vendor app, the UI): that is the base now
         _LOGGER.debug("%s: %s changed by hand, ending overrides", self.entity_id, self._real)
-        logic.by_hand(self._layer, new.state == STATE_ON, attrs_of(new))
+        logic.by_hand(self._layer, on, attrs_of(new))
         self._layer["applied"] = logic.target(self._layer, _minutes())
         self._schedule_end()
         self.async_write_ha_state()
