@@ -361,14 +361,8 @@ class LayeredLight(LightEntity, RestoreEntity):
         if _matches(new, self._layer["applied"]):
             return
         on = new.state == STATE_ON
-        if new.context.parent_id:
-            # an automation or script went around the stand-in: an ordinary command,
-            # recorded in the base; a running override goes back on the light
-            logic.command(self._layer, "turn_on" if on else "turn_off", attrs_of(new))
-            self._layer["applied"] = {"on": on, "attrs": attrs_of(new)}
-            self.hass.async_create_task(self._apply())
-            return
-        # changed by hand at the light (switch, vendor app, the UI): that is the base now
+        # not through the stand-in: meant for the real light itself (its switch, the
+        # vendor app, an automation for a button at it), so that is the base now
         _LOGGER.debug("%s: %s changed by hand, ending overrides", self.entity_id, self._real)
         logic.by_hand(self._layer, on, attrs_of(new))
         self._layer["applied"] = logic.target(self._layer, _minutes())

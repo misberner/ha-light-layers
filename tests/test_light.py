@@ -225,17 +225,16 @@ async def test_config_flow(hass):
     assert layered_flow["errors"] == {"light": "layered"}
 
 
-async def test_automation_going_around_the_stand_in_is_recorded(hass, clock):
-    """The switch-off script targets the real light: off is recorded, the override stays."""
+async def test_automation_on_the_real_light_means_the_real_light(hass, clock):
+    """E.g. an automation for a button at the light: like a change by hand."""
     await setup(hass, brightness=15)
     await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
     await advance(hass, clock, 1)
     await hass.services.async_call(
         "light", "turn_off", {"entity_id": REAL}, blocking=True,
-        context=Context(parent_id="some-automation-run"),
+        context=Context(parent_id="button-automation-run"),
     )  # fmt: skip
     await hass.async_block_till_done()
-    assert bright(hass, REAL) == ("on", 153)  # the override is back
-    assert hass.states.get(LAYERED).state == "off"  # the normal state is off now
-    await advance(hass, clock, 4.5)
     assert hass.states.get(REAL).state == "off"
+    assert hass.states.get(LAYERED).state == "off"
+    assert hass.states.get(LAYERED).attributes["overrides"] == {}

@@ -21,12 +21,11 @@ when the override ends the light shows its normal state *as it is then*.
   it: setting the same key again extends it (never shortens). With several
   active, the highest `priority` wins, and the next takes over when it ends.
   `light_layers.cancel` ends one (or all).
-- **By hand:** a change at the real light by a person (wall switch, the vendor
-  app, the UI) ends all overrides and becomes the new normal state.
-- **Around the stand-in:** an automation or script that targets the real light
-  directly is treated like a command to the stand-in: recorded in the normal
-  state, and a running override is put back (the light briefly shows the
-  command). Better to target the stand-in.
+- **At the real light:** any change that did not come through the stand-in is
+  taken as meant for the real light itself (its wall switch, the vendor app,
+  an automation for a button at the light): it ends all overrides and becomes
+  the new normal state. So everything that should respect overrides
+  (schedules, scenes, labels used as targets) must target the stand-in.
 - **Restarts:** the normal state and running overrides are restored; on start
   and when the real light comes back from unavailable, it is brought in line.
 
@@ -51,9 +50,7 @@ data:
 2. Add the helper for it with the old name, so the stand-in takes over the old
    entity id and automations, scenes and dashboards use it unchanged.
 3. Point device targets at the entity instead (a device target still reaches
-   the real light). Labels can stay on the real light; automations that switch
-   by label then go around the stand-in, which works but flickers during an
-   override, so prefer targeting the stand-ins.
+   the real light), and move labels used as targets to the stand-in.
 
 ## Development
 
