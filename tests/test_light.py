@@ -211,7 +211,8 @@ async def test_config_flow(hass):
         result["flow_id"], {"name": "Porch", "light": REAL, "minutes": 3}
     )
     assert result["type"] == "create_entry"
-    assert result["data"] == {"light": REAL} and result["options"] == {"minutes": 3}
+    assert result["data"] == {"light": REAL}
+    assert result["options"] == {"minutes": 3, "wall_switch": False}
     await hass.async_block_till_done()
     again = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     again = await hass.config_entries.flow.async_configure(
@@ -285,3 +286,131 @@ async def test_stand_in_sits_on_the_real_lights_device(hass, clock):
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert ent_reg.async_get(LAYERED).device_id == device.id
+
+
+def report(hass, **attrs):
+    """The real light reports something by itself (its own context)."""
+    state = attrs.pop("state", "on")
+    attrs = {**hass.states.get(REAL).attributes, **attrs}
+    hass.states.async_set(REAL, state, attrs, context=Context())
+
+
+async def test_colour_changed_at_the_light_is_by_hand(hass, clock):
+    await setup(hass, brightness=40)
+    await call(hass, "turn_on", LAYERED, color_temp_kelvin=2700)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
+    await advance(hass, clock, 1)
+    report(hass, color_mode="color_temp", color_temp_kelvin=4000)  # the vendor app
+    await hass.async_block_till_done()
+    st = hass.states.get(LAYERED)
+    assert st.attributes["overrides"] == {}
+    assert st.attributes["color_temp_kelvin"] == 4000
+
+
+async def test_the_lights_own_rendition_is_not_by_hand(hass, clock):
+    """A light that clamps or rounds what we sent keeps showing it that way."""
+    await setup(hass, brightness=40)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", color_temp_kelvin=2700)
+    report(hass, color_mode="color_temp", color_temp_kelvin=3000)  # while settling
+    await hass.async_block_till_done()
+    await advance(hass, clock, 1)
+    report(hass, color_mode="color_temp", color_temp_kelvin=3000, linkquality=90)
+    await hass.async_block_till_done()
+    assert hass.states.get(LAYERED).attributes["showing"] == "override door"
+
+
+async def test_unchanged_report_is_not_by_hand(hass, clock):
+    await setup(hass, brightness=15)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
+    await advance(hass, clock, 1)
+    report(hass, brightness=154)  # within a few steps
+    await hass.async_block_till_done()
+    assert hass.states.get(LAYERED).attributes["showing"] == "override door"
+
+
+async def _setup_effects(hass):
+    assert await async_setup_component(
+        hass, "template",
+        {"template": [{"light": [{
+            "name": "Real", "turn_on": [], "turn_off": [], "set_level": [],
+            "effect_list": "{{ ['off', 'candle'] }}", "effect": "{{ 'off' }}", "set_effect": [],
+        }]}]},
+    )  # fmt: skip
+    await hass.async_block_till_done()
+    await call(hass, "turn_on", REAL, brightness=40)
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_effect_is_stopped_when_the_override_ends(hass, clock):
+    from homeassistant.const import EVENT_CALL_SERVICE
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    await _setup_effects(hass)
+    calls = async_capture_events(hass, EVENT_CALL_SERVICE)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="party", effect="candle", minutes=1)
+    await advance(hass, clock, 1.5)
+    sent = [
+        c.data["service_data"]
+        for c in calls
+        if c.data["domain"] == "light" and c.data["service_data"].get("entity_id") == REAL
+    ]
+    assert sent[0]["effect"] == "candle"
+    assert sent[-1]["effect"] == "off" and sent[-1]["brightness"] == 40
+
+
+async def test_effect_changed_at_the_light_is_by_hand(hass, clock):
+    await _setup_effects(hass)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
+    await advance(hass, clock, 1)
+    report(hass, effect="candle")
+    await hass.async_block_till_done()
+    st = hass.states.get(LAYERED)
+    assert st.attributes["overrides"] == {} and st.attributes["effect"] == "candle"
+
+
+async def test_renamed_real_light_is_followed(hass, clock):
+    from homeassistant.helpers import entity_registry as er
+
+    assert await async_setup_component(
+        hass, "template",
+        {"template": [{"light": [{"name": "Real", "unique_id": "real",
+                                  "turn_on": [], "turn_off": []}]}]},
+    )  # fmt: skip
+    await hass.async_block_till_done()
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL}, unique_id=REAL)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    er.async_get(hass).async_update_entity(REAL, new_entity_id="light.real_raw")
+    await hass.async_block_till_done()
+    assert entry.data["light"] == "light.real_raw" and entry.unique_id == "light.real_raw"
+    await call(hass, "turn_on", LAYERED)
+    assert hass.states.get("light.real_raw").state == "on"
+
+
+async def test_wall_switch_back_on_is_by_hand(hass, clock):
+    await setup(hass, real_on=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    hass.config_entries.async_update_entry(entry, options={"minutes": 5, "wall_switch": True})
+    await hass.async_block_till_done()
+    attrs = dict(hass.states.get(REAL).attributes)
+    hass.states.async_set(REAL, "unavailable", attrs)  # switched off at the wall
+    await hass.async_block_till_done()
+    await advance(hass, clock, 1)
+    hass.states.async_set(REAL, "on", {**attrs, "brightness": 255})  # and on again
+    await hass.async_block_till_done()
+    assert bright(hass, LAYERED) == ("on", 255)
+    assert hass.states.get(REAL).state == "on"
+
+
+async def test_without_wall_switch_back_on_shows_the_normal_state(hass, clock):
+    await setup(hass, real_on=False)
+    attrs = dict(hass.states.get(REAL).attributes)
+    hass.states.async_set(REAL, "unavailable", attrs)  # a power cut
+    await hass.async_block_till_done()
+    hass.states.async_set(REAL, "on", {**attrs, "brightness": 255})
+    await hass.async_block_till_done()
+    assert hass.states.get(REAL).state == "off"

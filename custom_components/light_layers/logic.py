@@ -22,6 +22,8 @@ DEFAULTS = {
 COLOUR = ("color_temp_kelvin", "hs_color", "xy_color", "rgb_color", "rgbw_color", "rgbww_color")
 BRIGHTNESS = ("brightness", "brightness_pct")
 KEPT = BRIGHTNESS + COLOUR + ("effect",)
+# effect values that mean "no effect" (WLED's plain mode is "Solid")
+NO_EFFECT = (None, "", "off", "Off", "none", "None", "Solid", "stop_effect", "finish_effect")
 
 
 def config(overrides=None):
@@ -44,6 +46,8 @@ def _merge(attrs, update):
             for k in group:
                 out.pop(k, None)
     out.update({k: v for k, v in update.items() if k in KEPT and v is not None})
+    if out.get("effect") in NO_EFFECT:
+        out.pop("effect", None)
     return out
 
 
@@ -91,8 +95,11 @@ def cancel(layer, key=None):
 def by_hand(layer, on, attrs):
     """The real light was changed by hand: that is the new base, overrides end."""
     layer["overrides"].clear()
-    layer["base"] = {"on": on, "attrs": _merge(layer["base"]["attrs"], attrs) if on else
-                     layer["base"]["attrs"]}  # fmt: skip
+    if not on:
+        layer["base"]["on"] = False
+        return
+    kept = {k: v for k, v in layer["base"]["attrs"].items() if k != "effect"}  # shown, or none
+    layer["base"] = {"on": True, "attrs": _merge(kept, attrs)}
 
 
 def active(layer, now):

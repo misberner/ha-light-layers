@@ -27,6 +27,16 @@ when the override ends the light shows its normal state *as it is then*.
   an automation for a button at the light): it ends all overrides and becomes
   the new normal state. So everything that should respect overrides
   (schedules, scenes, labels used as targets) must target the stand-in.
+  A change is on/off, brightness, colour (temperature) or effect beyond a small
+  tolerance; how the light renders a command (clamped, rounded, gamut-clipped)
+  and reports that change nothing shown are not changes.
+- **Effects:** when an override with an effect ends, or the normal state has
+  none, the light's own "no effect" (`off`, `none`, `Solid`, …) is sent.
+- **Wall switch:** for a smart bulb behind an ordinary switch, turn on
+  *Powered through a wall switch*: coming back on after being unreachable is
+  then someone at the switch and becomes the normal state. Without it, the
+  light is brought back to its normal state (a power cut).
+- **Renaming the real light:** the stand-in follows the new entity id.
 - **Restarts:** the normal state and running overrides are restored; on start
   and when the real light comes back from unavailable, it is brought in line.
   With nothing to restore, the stand-in takes the real light as it is.

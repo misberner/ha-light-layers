@@ -94,3 +94,11 @@ def test_fill_takes_only_what_the_base_does_not_say():
     layer = ll.new_layer(on=True, attrs={"color_temp_kelvin": 2700})
     ll.fill(layer, {"brightness": 40, "xy_color": [0.5, 0.4]})
     assert layer["base"]["attrs"] == {"color_temp_kelvin": 2700, "brightness": 40}
+
+
+def test_by_hand_without_effect_ends_the_effect():
+    layer = ll.new_layer(on=True, attrs={"brightness": 15, "effect": "candle"})
+    ll.by_hand(layer, True, {"brightness": 15})
+    assert "effect" not in layer["base"]["attrs"]
+    ll.command(layer, "turn_on", {"effect": "off"})
+    assert "effect" not in layer["base"]["attrs"]
