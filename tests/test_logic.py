@@ -88,3 +88,9 @@ def test_toggle_and_override_off():
     ll.command(layer, "turn_on")
     ll.override(layer, "night", {"on": False}, 5, now=0)
     assert ll.target(layer, 0) == {"on": False, "attrs": {}}
+
+
+def test_fill_takes_only_what_the_base_does_not_say():
+    layer = ll.new_layer(on=True, attrs={"color_temp_kelvin": 2700})
+    ll.fill(layer, {"brightness": 40, "xy_color": [0.5, 0.4]})
+    assert layer["base"]["attrs"] == {"color_temp_kelvin": 2700, "brightness": 40}

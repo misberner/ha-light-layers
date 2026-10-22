@@ -38,6 +38,7 @@ from homeassistant.const import (
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
+from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -122,7 +123,11 @@ class LayerData(ExtraStoredData):
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    async_add_entities([LayeredLight(entry)])
+    entity = LayeredLight(entry)
+    # on the real light's device: area and device targets reach the stand-in, and
+    # skip the real light once it is hidden
+    entity.device_entry = async_entity_id_to_device(hass, entry.data[CONF_LIGHT])
+    async_add_entities([entity])
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(SERVICE_OVERRIDE, OVERRIDE_SCHEMA, "async_override")
     platform.async_register_entity_service(SERVICE_CANCEL, CANCEL_SCHEMA, "async_cancel")
@@ -144,6 +149,7 @@ class LayeredLight(LightEntity, RestoreEntity):
         self._sent_at = 0.0
         self._unsub_end = None
         self._cfg = logic.config()
+        self._adopt = False  # nothing restored: take the real light's state when it shows up
 
     # --- capabilities and state, from the real light and the base ----------------
 
@@ -283,8 +289,11 @@ class LayeredLight(LightEntity, RestoreEntity):
             if st is not None and st.state not in UNSET and _matches(st, want):
                 self._layer["applied"] = want
         elif (st := self._real_state) is not None and st.state not in UNSET:
-            self._layer = logic.new_layer(st.state == STATE_ON, attrs_of(st))
-            self._layer["applied"] = logic.target(self._layer, _minutes())
+            self._adopt_real(st)
+        else:
+            # the real light is not loaded yet (or unavailable): an empty base would
+            # switch it off when it comes, so take whatever it shows then
+            self._adopt = True
         self.async_on_remove(
             async_track_state_change_event(self.hass, [self._real], self._real_changed)
         )
@@ -316,6 +325,10 @@ class LayeredLight(LightEntity, RestoreEntity):
             attrs = {k: (list(v) if isinstance(v, tuple) else v) for k, v in kwargs.items()}
             if "brightness_pct" in attrs:
                 attrs[ATTR_BRIGHTNESS] = round(attrs.pop("brightness_pct") * 255 / 100)
+        st = self._real_state
+        showing_base = logic.active(self._layer, _minutes()) is None
+        if showing_base and self.is_on and st is not None and st.state == STATE_ON:
+            logic.fill(self._layer, attrs_of(st))
         logic.override(self._layer, key, attrs, minutes, _minutes(), priority)
         await self._apply()
 
@@ -349,16 +362,26 @@ class LayeredLight(LightEntity, RestoreEntity):
         if new is None or new.state in UNSET:
             self.async_write_ha_state()  # unavailable
             return
+        if self._adopt:
+            self._adopt_real(new)
+            self._schedule_end()
+            self.async_write_ha_state()
+            return
         if old is None or old.state in UNSET:
             # back: show what it should, whatever it came back with
             self._layer["applied"] = None
             self.hass.async_create_task(self._apply())
             return
-        if new.context.id in self._own:
-            return
-        if _seconds() - self._sent_at < self._cfg["own_change_seconds"]:
-            return  # still settling after our command (e.g. Zigbee reports without our context)
-        if _matches(new, self._layer["applied"]):
+        ours = (
+            new.context.id in self._own
+            # still settling after our command (e.g. Zigbee reports without our context)
+            or _seconds() - self._sent_at < self._cfg["own_change_seconds"]
+            or _matches(new, self._layer["applied"])
+        )
+        if ours:
+            showing_base = logic.active(self._layer, _minutes()) is None
+            if showing_base and self.is_on and new.state == STATE_ON:
+                logic.fill(self._layer, attrs_of(new))
             return
         on = new.state == STATE_ON
         # not through the stand-in: meant for the real light itself (its switch, the
@@ -368,6 +391,11 @@ class LayeredLight(LightEntity, RestoreEntity):
         self._layer["applied"] = logic.target(self._layer, _minutes())
         self._schedule_end()
         self.async_write_ha_state()
+
+    def _adopt_real(self, st: State) -> None:
+        self._adopt = False
+        self._layer = logic.new_layer(st.state == STATE_ON, attrs_of(st))
+        self._layer["applied"] = logic.target(self._layer, _minutes())
 
     def _schedule_end(self) -> None:
         self._cancel_end_timer()

@@ -15,7 +15,8 @@ when the override ends the light shows its normal state *as it is then*.
   Light Layers) for a real light. The stand-in is an ordinary light: schedules,
   scenes, dashboards and voice use it like the real one. Without an override
   it passes every command straight through. It mirrors the real light's colour
-  modes, colour temperature range, effects and transitions.
+  modes, colour temperature range, effects and transitions, and sits on the
+  real light's device, so area and device targets reach it.
 - **Override:** `light_layers.override` shows something else for a while:
   brightness, colour temperature, colour, effect, or `off: true`. `key` names
   it: setting the same key again extends it (never shortens). With several
@@ -28,6 +29,11 @@ when the override ends the light shows its normal state *as it is then*.
   (schedules, scenes, labels used as targets) must target the stand-in.
 - **Restarts:** the normal state and running overrides are restored; on start
   and when the real light comes back from unavailable, it is brought in line.
+  With nothing to restore, the stand-in takes the real light as it is.
+- **Brightness the base doesn't name:** a bare `turn_on`, or a base recorded
+  while the light was off, has no brightness. The stand-in takes it (and the
+  colour) from what the real light shows, so after an override the light
+  doesn't stay at the override's brightness.
 
 The stand-in's own state is the normal state; attribute `showing` says
 whether an override is on the real light right now, `overrides` lists them
@@ -49,8 +55,10 @@ data:
    `light.hausnummer_raw`) and hide it.
 2. Add the helper for it with the old name, so the stand-in takes over the old
    entity id and automations, scenes and dashboards use it unchanged.
-3. Point device targets at the entity instead (a device target still reaches
-   the real light), and move labels used as targets to the stand-in.
+3. Move labels used as targets to the stand-in: Home Assistant skips hidden
+   entities for label, area and device targets, so the hidden real light no
+   longer gets them. Area and device targets reach the stand-in on their own.
+4. Expose the stand-in, not the real light, to voice assistants and HomeKit.
 
 ## Development
 

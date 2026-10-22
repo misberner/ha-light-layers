@@ -238,3 +238,50 @@ async def test_automation_on_the_real_light_means_the_real_light(hass, clock):
     assert hass.states.get(REAL).state == "off"
     assert hass.states.get(LAYERED).state == "off"
     assert hass.states.get(LAYERED).attributes["overrides"] == {}
+
+
+async def test_bare_turn_on_learns_the_brightness_an_override_returns_to(hass, clock):
+    """A base without a brightness would come back at the override's."""
+    await setup(hass, real_on=False)
+    await call(hass, "turn_on", LAYERED)  # no brightness: the light picks one
+    await call(hass, "turn_on", REAL, brightness=30)  # (the real light reports it)
+    assert hass.states.get(LAYERED).attributes["overrides"] == {}
+    await advance(hass, clock, 1)
+    await call(hass, "override", LAYERED, domain=DOMAIN, key="door", brightness_pct=60)
+    await advance(hass, clock, 5.5)
+    assert bright(hass, REAL) == ("on", 30)
+
+
+async def test_real_light_loaded_later_is_taken_as_it_is(hass, clock):
+    """Nothing to restore and the real light not there yet: do not switch it off."""
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL},
+                            options={"minutes": 5})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(LAYERED).state == "unavailable"
+    hass.states.async_set(REAL, "on", {"brightness": 80, "supported_color_modes": ["brightness"],
+                                       "color_mode": "brightness"})  # fmt: skip
+    await hass.async_block_till_done()
+    assert bright(hass, LAYERED) == ("on", 80)
+    assert hass.states.get(REAL).state == "on"
+
+
+async def test_stand_in_sits_on_the_real_lights_device(hass, clock):
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    other = MockConfigEntry(domain="test")
+    other.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=other.entry_id, identifiers={("test", "porch")}
+    )
+    ent_reg = er.async_get(hass)
+    ent_reg.async_get_or_create("light", "test", "real", suggested_object_id="real",
+                                device_id=device.id)  # fmt: skip
+    hass.states.async_set(REAL, "off", {"supported_color_modes": ["onoff"]})
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert ent_reg.async_get(LAYERED).device_id == device.id

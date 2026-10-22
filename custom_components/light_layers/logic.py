@@ -47,6 +47,18 @@ def _merge(attrs, update):
     return out
 
 
+def fill(layer, attrs):
+    """Take what the base does not say (brightness, colour) from what the light shows.
+
+    A base recorded while the light was off, or set by a bare turn_on, has no
+    brightness; without one, the light would come back at an override's.
+    """
+    base = layer["base"]["attrs"]
+    for group in (BRIGHTNESS, COLOUR):
+        if not any(k in base for k in group):
+            base.update({k: v for k, v in attrs.items() if k in group})
+
+
 def command(layer, action, data=None):
     """An ordinary turn_on / turn_off / toggle: it sets the base."""
     base = layer["base"]
