@@ -41,12 +41,12 @@ from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
-    async_track_entity_registry_updated_event,
     async_track_point_in_utc_time,
     async_track_state_change_event,
 )
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.util import color as color_util
+from homeassistant.util import slugify
 
 from . import logic
 from .const import (
@@ -132,6 +132,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     entity = LayeredLight(entry)
+    # its own name as entity id, not prefixed with area and device: the stand-in takes
+    # over the id the real light had
+    entity.entity_id = f"light.{slugify(entry.title)}"
     # on the real light's device: area and device targets reach the stand-in, and
     # skip the real light once it is hidden
     entity.device_entry = async_entity_id_to_device(hass, entry.data[CONF_LIGHT])
@@ -306,9 +309,6 @@ class LayeredLight(LightEntity, RestoreEntity):
         self.async_on_remove(
             async_track_state_change_event(self.hass, [self._real], self._real_changed)
         )
-        self.async_on_remove(
-            async_track_entity_registry_updated_event(self.hass, self._real, self._real_renamed)
-        )
         self.async_on_remove(self._cancel_end_timer)
         if self.available:
             await self._apply()
@@ -438,18 +438,6 @@ class LayeredLight(LightEntity, RestoreEntity):
             if name in effects:
                 return name
         return None
-
-    @callback
-    def _real_renamed(self, event) -> None:
-        """The real light got a new entity id: follow it (the entry reloads)."""
-        data = event.data
-        if data["action"] != "update" or "old_entity_id" not in data:
-            return
-        new_id = data["entity_id"]
-        _LOGGER.debug("%s: %s renamed to %s", self.entity_id, self._real, new_id)
-        self.hass.config_entries.async_update_entry(
-            self._entry, data={**self._entry.data, CONF_LIGHT: new_id}, unique_id=new_id
-        )
 
     def _adopt_real(self, st: State) -> None:
         self._adopt = False

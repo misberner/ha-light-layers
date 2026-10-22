@@ -274,9 +274,13 @@ async def test_stand_in_sits_on_the_real_lights_device(hass, clock):
 
     other = MockConfigEntry(domain="test")
     other.add_to_hass(hass)
+    from homeassistant.helpers import area_registry as ar
+
+    area = ar.async_get(hass).async_create("Einfahrt")
     device = dr.async_get(hass).async_get_or_create(
-        config_entry_id=other.entry_id, identifiers={("test", "porch")}
+        config_entry_id=other.entry_id, identifiers={("test", "porch")}, name="Front lamp"
     )
+    dr.async_get(hass).async_update_device(device.id, area_id=area.id)
     ent_reg = er.async_get(hass)
     ent_reg.async_get_or_create("light", "test", "real", suggested_object_id="real",
                                 device_id=device.id)  # fmt: skip
@@ -285,6 +289,7 @@ async def test_stand_in_sits_on_the_real_lights_device(hass, clock):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    # on the device, and named as the stand-in (not prefixed with the device name)
     assert ent_reg.async_get(LAYERED).device_id == device.id
 
 

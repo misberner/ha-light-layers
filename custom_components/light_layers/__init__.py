@@ -5,7 +5,8 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device import async_remove_stale_devices_links_keep_entity_device
+from homeassistant.helpers.device import async_entity_id_to_device_id
+from homeassistant.helpers.helper_integration import async_handle_source_entity_changes
 
 from .const import CONF_LIGHT
 
@@ -13,9 +14,23 @@ PLATFORMS = [Platform.LIGHT]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    # the stand-in sits on the real light's device, so it is in its area
-    async_remove_stale_devices_links_keep_entity_device(
-        hass, entry.entry_id, entry.data[CONF_LIGHT]
+    real = entry.data[CONF_LIGHT]
+
+    def follow(entity_id: str) -> None:
+        # the real light got a new entity id (the entry reloads)
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_LIGHT: entity_id}, unique_id=entity_id
+        )
+
+    # renames, and the real light moving to another device (the stand-in sits on its device)
+    entry.async_on_unload(
+        async_handle_source_entity_changes(
+            hass,
+            helper_config_entry_id=entry.entry_id,
+            set_source_entity_id_or_uuid=follow,
+            source_device_id=async_entity_id_to_device_id(hass, real),
+            source_entity_id_or_uuid=real,
+        )
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_reload))
