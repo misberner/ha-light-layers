@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="#ffd166" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#ffb347" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffb347" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="1" stop-color="#ff9f1c"/>
+    </linearGradient>
+    <linearGradient id="mid" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6f8ff0"/>
+      <stop offset="1" stop-color="#3f63d6"/>
+    </linearGradient>
+    <linearGradient id="low" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4b5b80"/>
+      <stop offset="1" stop-color="#2c3852"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(0 32)">
+  <circle cx="256" cy="200" r="210" fill="url(#glow)"/>
+  <!-- bottom layer: the base -->
+  <path d="M96 330 L256 410 L416 330 L416 348 L256 428 L96 348 Z" fill="#1f283b"/>
+  <path d="M256 250 L416 330 L256 410 L96 330 Z" fill="url(#low)"/>
+  <!-- middle layer -->
+  <path d="M96 256 L256 336 L416 256 L416 274 L256 354 L96 274 Z" fill="#2a3f8f"/>
+  <path d="M256 176 L416 256 L256 336 L96 256 Z" fill="url(#mid)"/>
+  <!-- top layer: lit -->
+  <path d="M96 182 L256 262 L416 182 L416 200 L256 280 L96 200 Z" fill="#d9771a"/>
+  <path d="M256 102 L416 182 L256 262 L96 182 Z" fill="url(#top)"/>
+  <path d="M256 128 L364 182 L256 236 L148 182 Z" fill="#fff4d1" opacity="0.45"/>
+  <!-- rays -->
+  <g stroke="#ffc94d" stroke-width="14" stroke-linecap="round">
+    <line x1="256" y1="30" x2="256" y2="70"/>
+    <line x1="168" y1="58" x2="190" y2="88"/>
+    <line x1="344" y1="58" x2="322" y2="88"/>
+    <line x1="104" y1="110" x2="138" y2="124"/>
+    <line x1="408" y1="110" x2="374" y2="124"/>
+  </g>
+  </g>
+</svg>

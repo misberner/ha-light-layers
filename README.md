@@ -1,3 +1,5 @@
+<img src="custom_components/light_layers/brand/icon.png" alt="" width="128" align="right">
+
 # Light Layers
 
 Layers for a Home Assistant light. Each layer is a light entity of its own;
