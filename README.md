@@ -14,15 +14,22 @@ then*.
 
 ## How it works
 
-- **Base:** add the helper (Settings → Devices & services → Helpers → Light
-  Layers) for a real light. Its light, named as you enter it, is the base
-  layer: the light's normal state. Schedules, scenes, dashboards and voice use
-  it like the real light, and it says on or off. It mirrors the real light's
-  colour modes, colour temperature range, effects and transitions.
-- **Layers:** under *Configure → Add a layer*, give a layer a name and a
-  priority. It is a light too (`light.<base>_<layer>`). While it is on, the
-  real light shows it, with what it leaves open (a layer that only sets a
-  brightness) from the base; while it is off, it lets the layers below
+- **Set up once, then add lights:** add the integration (Settings → Devices &
+  services → Add integration → Light Layers); it starts empty. On its page,
+  **Add light** picks a real light, and optionally a first layer.
+- **Base:** each light gets a base layer: the light's normal state.
+  Schedules, scenes, dashboards and voice use it like the real light, and it
+  says on or off. It mirrors the real light's colour modes, colour temperature
+  range, effects and transitions.
+- **Taking over the entity id** (on by default): the real light is renamed to
+  `<id>_raw` and hidden, and the base takes its entity id, labels, aliases and
+  voice-assistant exposure. Automations, scenes and dashboards keep working,
+  now through the layers, with nothing to change. Removing the light from the
+  integration gives everything back.
+- **Layers:** more layers under the light's **Layers and settings**: a name and
+  a priority each. A layer is a light too (`<base id>_<layer>`). While it is
+  on, the real light shows it, with what it leaves open (a layer that only sets
+  a brightness) from the base; while it is off, it lets the layers below
   through. With several on, the highest priority wins (among equal ones the
   one switched on last), and the next takes over when it goes off. A layer
   keeps its brightness and colour while off, like any light.
@@ -40,7 +47,7 @@ then*.
 - **Effects:** when a layer with an effect goes off, or the layer shown has
   none, the light's own "no effect" (`off`, `none`, `Solid`, …) is sent.
 - **Wall switch:** for a smart bulb behind an ordinary switch, turn on
-  *Powered through a wall switch* (*Configure → Settings*): coming back on after
+  *Powered through a wall switch* (*Layers and settings → Settings*): coming back on after
   being unreachable is then someone at the switch and becomes the base. Without
   it, the light is brought back to what it should show (a power cut).
 - **Renaming the real light:** the layers follow the new entity id.
@@ -97,14 +104,13 @@ mode: queued
 
 ## Setting it up for an existing light
 
-1. Rename the real light's entity (e.g. `light.hausnummer` →
-   `light.hausnummer_raw`) and hide it.
-2. Add the helper for it with the old name, so the base takes over the old
-   entity id and automations, scenes and dashboards use it unchanged.
-3. Move labels used as targets to the base: Home Assistant skips hidden
-   entities for label, area and device targets, so the hidden real light no
-   longer gets them. Area and device targets reach the base on its own.
-4. Expose the base, not the real light, to voice assistants and HomeKit.
+Add the light with *Take over the entity id* on: that is all. Labels used as
+targets, aliases and voice exposure move to the base; area and device targets
+reach the base on the light's device. Only HomeKit bridges and similar
+integrations that list entities by id need the base picked there.
+
+A light without a unique id (some YAML lights) cannot be renamed; add it
+without taking over, and point automations at the base yourself.
 
 ## Development
 

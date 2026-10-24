@@ -1,12 +1,17 @@
 {
   "domain": "light_layers",
   "name": "Light Layers",
-  "codeowners": ["@misberner"],
+  "codeowners": [
+    "@misberner"
+  ],
   "config_flow": true,
-  "dependencies": ["light"],
+  "dependencies": [
+    "light"
+  ],
   "documentation": "https://github.com/misberner/ha-light-layers",
-  "integration_type": "helper",
+  "integration_type": "service",
   "iot_class": "calculated",
   "requirements": [],
-  "version": "0.2.0"
+  "version": "0.3.0",
+  "single_config_entry": true
 }

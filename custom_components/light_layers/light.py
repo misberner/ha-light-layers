@@ -25,7 +25,7 @@ from homeassistant.components.light import (
     LightEntity,
     LightEntityFeature,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_SUPPORTED_FEATURES,
@@ -38,12 +38,19 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.helpers.storage import Store
 from homeassistant.util import color as color_util
 from homeassistant.util import slugify
 
-from . import logic
-from .const import CONF_LAYERS, CONF_LIGHT, CONF_PRIORITY, CONF_WALL_SWITCH, DOMAIN
+from . import light_store, logic, takeover
+from .const import (
+    CONF_ENTITY_ID,
+    CONF_LAYERS,
+    CONF_LIGHT,
+    CONF_PRIORITY,
+    CONF_TAKE_OVER,
+    CONF_WALL_SWITCH,
+    SUBENTRY_LIGHT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,42 +99,51 @@ def attrs_of(state: State) -> dict[str, Any]:
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    controller = Controller(hass, entry)
-    await controller.async_start()
-    entry.async_on_unload(controller.async_stop)
-    title = slugify(entry.title)
-    entities = [LayerLight(controller, logic.BASE, entry.title, entry.entry_id, f"light.{title}")]
-    for layer in entry.options.get(CONF_LAYERS, []):
+    registry = er.async_get(hass)
+    for sub in entry.subentries.values():
+        if sub.subentry_type != SUBENTRY_LIGHT:
+            continue
+        controller = Controller(hass, sub)
+        await controller.async_start()
+        entry.async_on_unload(controller.async_stop)
+        entities = _entities(controller, sub)
+        # on the real light's device: area and device targets reach the base, and skip
+        # the real light once it is hidden
+        device = async_entity_id_to_device(hass, sub.data[CONF_LIGHT])
+        for entity in entities:
+            entity.device_entry = device
+        # layers removed in its settings are gone for good
+        wanted = {e.unique_id for e in entities}
+        for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if reg.config_subentry_id == sub.subentry_id and reg.unique_id not in wanted:
+                registry.async_remove(reg.entity_id)
+        async_add_entities(entities, config_subentry_id=sub.subentry_id)
+
+
+def _entities(controller: Controller, sub: ConfigSubentry) -> list[LayerLight]:
+    # the base: the real light's old id when it took it over, else from the name
+    base_id = sub.data.get(CONF_ENTITY_ID) or f"light.{slugify(sub.title)}"
+    entities = [LayerLight(controller, logic.BASE, sub.title, sub.subentry_id, base_id)]
+    for layer in sub.data.get(CONF_LAYERS, []):
         entities.append(
             LayerLight(
                 controller,
                 layer["id"],
-                f"{entry.title} {layer['name']}",
-                f"{entry.entry_id}_{layer['id']}",
-                f"light.{title}_{slugify(layer['name'])}",
+                f"{sub.title} {layer['name']}",
+                f"{sub.subentry_id}_{layer['id']}",
+                f"{base_id}_{slugify(layer['name'])}",
             )
         )
-    # on the real light's device: area and device targets reach the layers, and skip
-    # the real light once it is hidden
-    device = async_entity_id_to_device(hass, entry.data[CONF_LIGHT])
-    for entity in entities:
-        entity.device_entry = device
-    # layers removed in the options are gone for good
-    registry = er.async_get(hass)
-    wanted = {e.unique_id for e in entities}
-    for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if reg.unique_id not in wanted:
-            registry.async_remove(reg.entity_id)
-    async_add_entities(entities)
+    return entities
 
 
 class Controller:
     """The layers of one real light: their state, and keeping the real light on the top one."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, sub: ConfigSubentry) -> None:
         self.hass = hass
-        self.entry = entry
-        self.real = entry.data[CONF_LIGHT]
+        self.data = sub.data
+        self.real = sub.data[CONF_LIGHT]
         self.state = logic.new_state()
         self.entities: dict[str, LayerLight] = {}
         self._own: list[str] = []  # contexts of our calls to the real light
@@ -135,7 +151,7 @@ class Controller:
         self._shown: State | None = None  # the real light's last report of our command
         self._adopt = False  # nothing restored: take the real light's state when it shows up
         self._cfg = logic.config()
-        self._store: Store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
+        self._store = light_store(hass, sub.subentry_id)
         self._unsub = None
 
     @property
@@ -148,13 +164,13 @@ class Controller:
         return st is not None and st.state != STATE_UNAVAILABLE
 
     def priorities(self) -> dict[str, int]:
-        layers = self.entry.options.get(CONF_LAYERS, [])
+        layers = self.data.get(CONF_LAYERS, [])
         return {layer["id"]: layer[CONF_PRIORITY] for layer in layers}
 
     def name_of(self, key: str) -> str:
         if key == logic.BASE:
             return "base"
-        for layer in self.entry.options.get(CONF_LAYERS, []):
+        for layer in self.data.get(CONF_LAYERS, []):
             if layer["id"] == key:
                 return layer["name"]
         return key
@@ -244,7 +260,7 @@ class Controller:
             self._write()
             return
         if old is None or old.state in UNSET:
-            if self.entry.options.get(CONF_WALL_SWITCH) and new.state == STATE_ON:
+            if self.data.get(CONF_WALL_SWITCH) and new.state == STATE_ON:
                 # power back through the wall switch: someone switched it on there
                 self._by_hand(new)
                 return
@@ -342,6 +358,12 @@ class LayerLight(LightEntity):
     @property
     def _real_state(self) -> State | None:
         return self._controller.real_state
+
+    async def async_added_to_hass(self) -> None:
+        controller = self._controller
+        if self._key == logic.BASE and controller.data.get(CONF_TAKE_OVER):
+            # labels, aliases and voice exposure the hidden real light carries are the base's
+            takeover.move_to_base(self.hass, controller.real, self.entity_id)
 
     async def async_will_remove_from_hass(self) -> None:
         self._controller.entities.pop(self._key, None)
