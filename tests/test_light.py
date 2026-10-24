@@ -85,7 +85,8 @@ async def setup(hass, real_on=True, brightness=40, layers=LAYERS, options=None):
 
 
 async def call(hass, service, entity, domain="light", **data):
-    await hass.services.async_call(domain, service, {"entity_id": entity, **data}, blocking=True)
+    target = {"entity_id": entity} if entity else {}
+    await hass.services.async_call(domain, service, {**target, **data}, blocking=True)
     await hass.async_block_till_done()
 
 
@@ -473,4 +474,50 @@ async def test_without_wall_switch_back_on_shows_the_normal_state(hass, clock):
     await hass.async_block_till_done()
     hass.states.async_set(REAL, "on", {**attrs, "brightness": 255})
     await hass.async_block_till_done()
+    assert hass.states.get(REAL).state == "off"
+
+
+async def test_service_reaches_the_base_through_labels(hass, clock):
+    """light_layers.turn_on/off on a label: the base of a layered light (which the
+    label names, not its hidden layers), other lights as they are; layers above stay."""
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.helpers import label_registry as lr
+
+    light = {"turn_on": [], "turn_off": [], "set_level": []}
+    assert await async_setup_component(hass, "template", {"template": [{"light": [
+        {"name": "Real", "unique_id": "real", **light},
+        {"name": "Other", "unique_id": "other", **light},
+    ]}]})  # fmt: skip
+    await hass.async_block_till_done()
+    label = lr.async_get(hass).async_create("Outdoor")
+    ent_reg = er.async_get(hass)
+    for entity in (REAL, "light.other"):
+        ent_reg.async_update_entity(entity, labels={label.label_id})
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL},
+                            options={"layers": LAYERS})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await call(hass, "turn_on", None, domain=DOMAIN, label_id=label.label_id, brightness=20)
+    assert bright(hass, LAYERED) == ("on", 20)
+    assert bright(hass, REAL) == ("on", 20)
+    assert bright(hass, "light.other") == ("on", 20)
+    await call(hass, "turn_on", DOOR, brightness=255)
+    await call(hass, "turn_off", None, domain=DOMAIN, label_id=label.label_id)
+    assert hass.states.get(LAYERED).state == "off"
+    assert hass.states.get("light.other").state == "off"
+    assert bright(hass, REAL) == ("on", 255)  # the layer above stays
+    assert hass.states.get(DOOR).state == "on"
+    await call(hass, "turn_off", DOOR)
+    assert hass.states.get(REAL).state == "off"
+
+
+async def test_service_on_entities_maps_the_real_light_and_keeps_layers(hass, clock):
+    await setup(hass, brightness=15)
+    await call(hass, "turn_on", DOOR, brightness=255)
+    await call(hass, "toggle", REAL, domain=DOMAIN)  # the base, not the real light
+    assert hass.states.get(LAYERED).state == "off"
+    assert bright(hass, REAL) == ("on", 255)
+    await call(hass, "turn_off", DOOR, domain=DOMAIN)  # a layer named stays itself
     assert hass.states.get(REAL).state == "off"

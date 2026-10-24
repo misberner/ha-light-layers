@@ -1,0 +1,59 @@
+turn_on:
+  target:
+    entity:
+      domain: light
+  fields:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: seconds
+    brightness_pct:
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      selector:
+        color_temp:
+          unit: kelvin
+          min: 2000
+          max: 6500
+    rgb_color:
+      selector:
+        color_rgb:
+    effect:
+      selector:
+        text:
+
+turn_off:
+  target:
+    entity:
+      domain: light
+  fields:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: seconds
+
+toggle:
+  target:
+    entity:
+      domain: light
+  fields:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: seconds
+    brightness_pct:
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"

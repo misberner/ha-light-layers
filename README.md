@@ -32,6 +32,19 @@ then*.
   the garden on" never leaves a layer on, and nothing is counted twice.
   Templates that count lights themselves leave the layers out with
   `| reject('in', integration_entities('light_layers'))`.
+- **Actions for the base:** `light_layers.turn_on`, `turn_off` and `toggle`
+  work like the light actions, with a real light that has layers standing for
+  its base. So a label, area or device target, which names the real lights,
+  switches their base layers, and other lights as `light.turn_on` would:
+
+  ```yaml
+  action: light_layers.turn_off
+  target:
+    label_id: outdoor_lights
+  ```
+
+  A layer named by its entity id stays itself. Use these for schedules that
+  set the normal state of a group of lights.
 - **Timing is the automation's:** a layer stays on until something turns it
   off, so "2 minutes after the door closed" is an ordinary trigger with
   `for:` (see below), and opening the door again simply starts over.
@@ -102,7 +115,8 @@ mode: queued
 
 1. Create the helper for the light.
 2. Point the schedules and scenes that set the light's normal state at
-   `<light>_base`. Anything that still goes to the real light directly counts as
+   `<light>_base`, or switch them to the `light_layers` actions (which keep
+   their area, device and label targets). Anything that still goes to the real light directly counts as
    a change at the light: it becomes the base and turns the layers off.
 3. Point automations for temporary changes at a layer.
 

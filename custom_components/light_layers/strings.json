@@ -61,5 +61,57 @@
     "error": {
       "duplicate": "There already is a layer with that name."
     }
+  },
+  "services": {
+    "turn_on": {
+      "name": "Turn on (base layer)",
+      "description": "Turns lights on. A real light with layers is switched through its base layer, so the layers above it stay as they are; other lights as with the light action. Takes areas, devices and labels too (they name the real lights; the layers are hidden). Further fields of the light action are passed on.",
+      "fields": {
+        "transition": {
+          "name": "Transition",
+          "description": "Duration of the change, in seconds."
+        },
+        "brightness_pct": {
+          "name": "Brightness",
+          "description": "Brightness in percent."
+        },
+        "color_temp_kelvin": {
+          "name": "Color temperature",
+          "description": "Color temperature in Kelvin."
+        },
+        "rgb_color": {
+          "name": "Color",
+          "description": "Color as red, green, blue."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "An effect of the light."
+        }
+      }
+    },
+    "turn_off": {
+      "name": "Turn off (base layer)",
+      "description": "Turns lights off. A real light with layers is switched through its base layer, so the layers above it stay as they are; other lights as with the light action. Takes areas, devices and labels too (they name the real lights; the layers are hidden). Further fields of the light action are passed on.",
+      "fields": {
+        "transition": {
+          "name": "Transition",
+          "description": "Duration of the change, in seconds."
+        }
+      }
+    },
+    "toggle": {
+      "name": "Toggle (base layer)",
+      "description": "Toggles lights. A real light with layers is switched through its base layer, so the layers above it stay as they are; other lights as with the light action. Takes areas, devices and labels too (they name the real lights; the layers are hidden). Further fields of the light action are passed on.",
+      "fields": {
+        "transition": {
+          "name": "Transition",
+          "description": "Duration of the change, in seconds."
+        },
+        "brightness_pct": {
+          "name": "Brightness",
+          "description": "Brightness in percent."
+        }
+      }
+    }
   }
 }
