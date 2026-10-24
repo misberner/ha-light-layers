@@ -2,79 +2,64 @@
   "config": {
     "step": {
       "user": {
-        "title": "Light Layers",
-        "description": "Adds Light Layers. Then add lights to it on the integration's page (Add light); each gets a base layer and the layers you configure."
+        "title": "Layered light",
+        "description": "Layers for a real light, each a light of its own: <light>_base, the normal state (point schedules and scenes at it), and the layers above it. The real light shows the highest layer that is on. Changes made at the real light itself (its switch, the app, \"all lights off\") become the base and turn the layers off. More layers later under Options.",
+        "data": {
+          "light": "Real light",
+          "name": "Name",
+          "layer": "First layer",
+          "wall_switch": "Powered through a wall switch"
+        },
+        "data_description": {
+          "name": "Empty: the real light's name.",
+          "layer": "Optional, e.g. Door: a layer with priority 10.",
+          "wall_switch": "Smart bulb behind an ordinary switch: when it comes back on after being unreachable, someone switched it on there, so that becomes the normal state."
+        }
       }
     },
+    "error": {
+      "layered": "That is a layer; pick the real light."
+    },
     "abort": {
-      "single_instance_allowed": "Light Layers is already set up; add lights on its page."
+      "already_configured": "This light already has layers."
     }
   },
-  "config_subentries": {
-    "light": {
-      "initiate_flow": {
-        "user": "Add light",
-        "reconfigure": "Layers and settings"
-      },
-      "entry_type": "Light",
-      "step": {
-        "user": {
-          "title": "Add a light",
-          "description": "Layers for a real light. The base layer is the light's normal state: use it like the real light. With *Take over the entity id* (recommended) the base gets the real light's entity id and its labels, and the real light becomes <id>_raw, hidden, so automations, scenes and dashboards keep working and go through the layers. Each layer is a light of its own; the real light shows the highest one that is on. More layers later under the light's Layers and settings.",
-          "data": {
-            "light": "Real light",
-            "name": "Name",
-            "take_over": "Take over the entity id",
-            "layer": "First layer",
-            "wall_switch": "Powered through a wall switch"
-          },
-          "data_description": {
-            "name": "Empty: the real light's name.",
-            "take_over": "Rename the real light to <id>_raw and hide it; the base takes its id, labels, aliases and voice exposure. Undone when the helper is deleted.",
-            "layer": "Optional, e.g. Door: a layer with priority 10 (more under Layers and settings).",
-            "wall_switch": "Smart bulb behind an ordinary switch: when it comes back on after being unreachable, someone switched it on there, so that becomes the normal state."
-          }
-        },
-        "reconfigure": {
-          "title": "Layers",
-          "menu_options": {
-            "add_layer": "Add a layer",
-            "remove_layer": "Remove layers",
-            "settings": "Settings"
-          }
-        },
-        "add_layer": {
-          "title": "Add a layer",
-          "description": "A light of its own above the base. While it is on, the real light shows it (the highest priority wins); off, it lets the layers below through.",
-          "data": {
-            "name": "Name",
-            "priority": "Priority"
-          }
-        },
-        "remove_layer": {
-          "title": "Remove layers",
-          "data": {
-            "layers": "Layers"
-          }
-        },
-        "settings": {
-          "title": "Settings",
-          "data": {
-            "wall_switch": "Powered through a wall switch"
-          },
-          "data_description": {
-            "wall_switch": "Smart bulb behind an ordinary switch: when it comes back on after being unreachable, someone switched it on there, so that becomes the normal state."
-          }
+  "options": {
+    "step": {
+      "init": {
+        "title": "Layers",
+        "menu_options": {
+          "add_layer": "Add a layer",
+          "remove_layer": "Remove layers",
+          "settings": "Settings"
         }
       },
-      "error": {
-        "layered": "That is already a layered light; pick the real light.",
-        "not_in_registry": "This light has no unique id, so it cannot be renamed; turn off Take over the entity id.",
-        "duplicate": "There already is a layer with that name."
+      "add_layer": {
+        "title": "Add a layer",
+        "description": "A light of its own above the base. While it is on, the real light shows it (the highest priority wins); off, it lets the layers below through.",
+        "data": {
+          "name": "Name",
+          "priority": "Priority"
+        }
       },
-      "abort": {
-        "already_configured": "This light already has layers."
+      "remove_layer": {
+        "title": "Remove layers",
+        "data": {
+          "layers": "Layers"
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "data": {
+          "wall_switch": "Powered through a wall switch"
+        },
+        "data_description": {
+          "wall_switch": "Smart bulb behind an ordinary switch: when it comes back on after being unreachable, someone switched it on there, so that becomes the normal state."
+        }
       }
+    },
+    "error": {
+      "duplicate": "There already is a layer with that name."
     }
   }
 }

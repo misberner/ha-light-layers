@@ -16,7 +16,7 @@ from custom_components.light_layers import light as layered
 from custom_components.light_layers.const import DOMAIN
 
 REAL = "light.real"
-LAYERED = "light.porch"
+LAYERED = "light.real_base"
 
 
 @pytest.fixture(autouse=True)
@@ -47,25 +47,11 @@ async def advance(hass, clock, minutes):
     await hass.async_block_till_done()
 
 
-DOOR = "light.porch_door"
+DOOR = "light.real_door"
 LAYERS = [{"id": "d00r", "name": "Door", "priority": 10}]
 
 
-async def add_light(hass, layers=LAYERS, **data):
-    """The integration's entry with one layered light (subentry "porch") for REAL."""
-    sub = {"light": REAL, "wall_switch": False, "layers": layers, **data}
-    entry = MockConfigEntry(
-        domain=DOMAIN, title="Light Layers", data={}, version=2, entry_id="ll",
-        subentries_data=[{"data": sub, "subentry_id": "porch", "subentry_type": "light",
-                          "title": "Porch", "unique_id": sub["light"]}],
-    )  # fmt: skip
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
-
-
-async def setup(hass, real_on=True, brightness=40, layers=LAYERS, **data):
+async def setup(hass, real_on=True, brightness=40, layers=LAYERS, options=None):
     assert await async_setup_component(
         hass,
         "template",
@@ -88,7 +74,14 @@ async def setup(hass, real_on=True, brightness=40, layers=LAYERS, **data):
     await hass.async_block_till_done()
     if real_on:
         await call(hass, "turn_on", REAL, brightness=brightness)
-    return await add_light(hass, layers=layers, **data)
+    options = options or {"wall_switch": False, "layers": layers}
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Porch", data={"light": REAL}, entry_id="porch", options=options
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
 
 
 async def call(hass, service, entity, domain="light", **data):
@@ -147,10 +140,10 @@ async def test_a_layer_on_while_the_base_is_off(hass, clock):
 async def test_priority(hass, clock):
     layers = [*LAYERS, {"id": "c1n0", "name": "Cinema", "priority": 20}]
     await setup(hass, brightness=15, layers=layers)
-    await call(hass, "turn_on", "light.porch_cinema", brightness=3)
+    await call(hass, "turn_on", "light.real_cinema", brightness=3)
     await call(hass, "turn_on", DOOR, brightness=255)
     assert bright(hass, REAL) == ("on", 3)
-    await call(hass, "turn_off", "light.porch_cinema")
+    await call(hass, "turn_off", "light.real_cinema")
     assert bright(hass, REAL) == ("on", 255)
 
 
@@ -213,123 +206,72 @@ async def test_state_is_saved(hass, clock, hass_storage):
     assert saved["d00r"]["on"] is True and saved["d00r"]["attrs"] == {"brightness": 200}
 
 
-async def test_config_flow_is_empty_and_single(hass):
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    assert result["type"] == "create_entry" and result["data"] == {}
-    await hass.async_block_till_done()
-    again = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    assert again["type"] == "abort"
-
-
-async def _empty_entry(hass, light_unique_id=None):
+async def test_config_flow(hass):
     assert await async_setup_component(
         hass, "template",
-        {"template": [{"light": [{
-            "name": "Real", "turn_on": [], "turn_off": [], "set_level": [],
-            **({"unique_id": light_unique_id} if light_unique_id else {}),
-        }]}]},
+        {"template": [{"light": [{"name": "Real", "turn_on": [], "turn_off": []}]}]},
     )  # fmt: skip
     await hass.async_block_till_done()
-    entry = MockConfigEntry(domain=DOMAIN, title="Light Layers", data={}, version=2)
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
-
-
-async def _add(hass, entry, **user_input):
-    flow = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "light"), context={"source": "user"}
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"light": REAL, "layer": "Door"}
     )
-    result = await hass.config_entries.subentries.async_configure(flow["flow_id"], user_input)
-    await hass.async_block_till_done()
-    return result
-
-
-async def test_add_a_light_without_taking_over(hass, clock):
-    entry = await _empty_entry(hass)
-    result = await _add(hass, entry, light=REAL, name="Porch", take_over=False, layer="Door")
     assert result["type"] == "create_entry"
-    assert hass.states.get(LAYERED).state == "off"
-    assert hass.states.get(DOOR).state == "off"
-    assert hass.states.get(REAL) is not None  # the real light keeps its id
-    again = await _add(hass, entry, light=REAL, take_over=False)
+    assert result["title"] == "Real"  # the real light's name
+    assert result["data"] == {"light": REAL}
+    assert result["options"]["layers"][0]["name"] == "Door"
+    assert result["options"]["layers"][0]["priority"] == 10
+    await hass.async_block_till_done()
+    again = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    again = await hass.config_entries.flow.async_configure(
+        again["flow_id"], {"name": "Porch 2", "light": REAL}
+    )
     assert again["type"] == "abort"
-    loop = await _add(hass, entry, light=LAYERED, take_over=False)
-    assert loop["errors"] == {"light": "layered"}
-
-
-async def test_without_a_unique_id_the_light_cannot_be_taken_over(hass):
-    entry = await _empty_entry(hass)
-    result = await _add(hass, entry, light=REAL)
-    assert result["errors"] == {"light": "not_in_registry"}
-
-
-async def test_taking_over_and_giving_back(hass, clock):
-    from homeassistant.helpers import entity_registry as er
-    from homeassistant.helpers import label_registry as lr
-
-    entry = await _empty_entry(hass, light_unique_id="real")
-    registry = er.async_get(hass)
-    label = lr.async_get(hass).async_create("Outdoor").label_id
-    registry.async_update_entity(REAL, labels={label})
-    registry.async_update_entity_options(REAL, "conversation", {"should_expose": True})
-    result = await _add(hass, entry, light=REAL, layer="Door")
-    assert result["type"] == "create_entry" and result["title"] == "Real"
-    raw = registry.async_get("light.real_raw")
-    assert raw is not None and raw.hidden_by == er.RegistryEntryHider.INTEGRATION
-    assert raw.labels == set() and raw.options["conversation"]["should_expose"] is False
-    base = registry.async_get(REAL)
-    assert base.platform == DOMAIN and base.labels == {label}
-    assert base.options["conversation"]["should_expose"] is True
-    await call(hass, "turn_on", "light.real_door", brightness=255)
-    assert bright(hass, "light.real_raw") == ("on", 255)
-
-    sub_id = next(iter(entry.subentries))
-    assert hass.config_entries.async_remove_subentry(entry, sub_id)
-    await hass.async_block_till_done()
-    back = registry.async_get(REAL)
-    assert back.platform == "template" and back.hidden_by is None and back.labels == {label}
-    assert back.options["conversation"]["should_expose"] is True
-    assert registry.async_get("light.real_door") is None
-
-
-async def _reconfigure(hass, entry, step, user_input):
-    flow = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "light"), context={"source": "reconfigure", "subentry_id": "porch"}
+    layered_flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    layered_flow = await hass.config_entries.flow.async_configure(
+        layered_flow["flow_id"], {"name": "Loop", "light": LAYERED}
     )
-    assert flow["type"] == "menu"
-    flow = await hass.config_entries.subentries.async_configure(
-        flow["flow_id"], {"next_step_id": step}
-    )
-    result = await hass.config_entries.subentries.async_configure(flow["flow_id"], user_input)
-    await hass.async_block_till_done()
-    return result
+    assert layered_flow["errors"] == {"light": "layered"}
 
 
-async def test_reconfigure_adds_and_removes_layers(hass, clock):
+async def test_options_add_and_remove_a_layer(hass, clock):
     from homeassistant.helpers import entity_registry as er
 
     entry = await setup(hass, layers=[])
-    result = await _reconfigure(hass, entry, "add_layer", {"name": "Door", "priority": 10})
-    assert result["type"] == "abort"
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    assert flow["type"] == "menu" and "remove_layer" not in flow["menu_options"]
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "add_layer"}
+    )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"name": "Door", "priority": 10}
+    )
+    assert flow["type"] == "create_entry"
+    await hass.async_block_till_done()
     assert hass.states.get(DOOR).state == "off"
     await call(hass, "turn_on", DOOR, brightness=255)
     assert bright(hass, REAL) == ("on", 255)
 
-    dup = await _reconfigure(hass, entry, "add_layer", {"name": "door", "priority": 5})
-    assert dup["errors"] == {"name": "duplicate"}
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "add_layer"}
+    )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"name": "door", "priority": 5}
+    )
+    assert flow["errors"] == {"name": "duplicate"}
 
-    layer_id = entry.subentries["porch"].data["layers"][0]["id"]
-    await _reconfigure(hass, entry, "remove_layer", {"layers": [layer_id]})
+    layer_id = entry.options["layers"][0]["id"]
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "remove_layer"}
+    )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"layers": [layer_id]}
+    )
+    await hass.async_block_till_done()
     assert er.async_get(hass).async_get(DOOR) is None
     assert bright(hass, REAL) == ("on", 40)  # the base again
-
-
-async def test_reconfigure_settings(hass, clock):
-    entry = await setup(hass)
-    await _reconfigure(hass, entry, "settings", {"wall_switch": True})
-    assert entry.subentries["porch"].data["wall_switch"] is True
 
 
 async def test_automation_on_the_real_light_means_the_real_light(hass, clock):
@@ -361,7 +303,11 @@ async def test_bare_turn_on_learns_the_brightness_to_return_to(hass, clock):
 
 async def test_real_light_loaded_later_is_taken_as_it_is(hass, clock):
     """Nothing to restore and the real light not there yet: do not switch it off."""
-    await add_light(hass)
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL},
+                            options={"layers": LAYERS})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
     assert hass.states.get(LAYERED).state == "unavailable"
     hass.states.async_set(REAL, "on", {"brightness": 80, "supported_color_modes": ["brightness"],
                                        "color_mode": "brightness"})  # fmt: skip
@@ -387,16 +333,20 @@ async def test_layers_sit_on_the_real_lights_device(hass, clock):
     ent_reg.async_get_or_create("light", "test", "real", suggested_object_id="real",
                                 device_id=device.id)  # fmt: skip
     hass.states.async_set(REAL, "off", {"supported_color_modes": ["onoff"]})
-    await add_light(hass)
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL},
+                            options={"layers": LAYERS})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
     # on the device, and named as the layers (not prefixed with the device name)
     assert ent_reg.async_get(LAYERED).device_id == device.id
     assert ent_reg.async_get(DOOR).device_id == device.id
-    # the layer above is hidden: an area target reaches only the base
-    assert ent_reg.async_get(LAYERED).hidden_by is None
+    # all layers are hidden: area targets and counts reach the real light only
+    assert ent_reg.async_get(LAYERED).hidden_by == er.RegistryEntryHider.INTEGRATION
     assert ent_reg.async_get(DOOR).hidden_by == er.RegistryEntryHider.INTEGRATION
     await hass.services.async_call("light", "turn_on", {"area_id": area.id}, blocking=True)
     await hass.async_block_till_done()
-    assert hass.states.get(LAYERED).state == "on"
+    assert hass.states.get(LAYERED).state == "off"
     assert hass.states.get(DOOR).state == "off"
 
 
@@ -449,7 +399,11 @@ async def _setup_effects(hass):
     )  # fmt: skip
     await hass.async_block_till_done()
     await call(hass, "turn_on", REAL, brightness=40)
-    await add_light(hass)
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL},
+                            options={"layers": LAYERS})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
 
 
 async def test_effect_is_stopped_when_the_layer_goes_off(hass, clock):
@@ -488,16 +442,20 @@ async def test_renamed_real_light_is_followed(hass, clock):
                                   "turn_on": [], "turn_off": []}]}]},
     )  # fmt: skip
     await hass.async_block_till_done()
-    entry = await add_light(hass)
+    entry = MockConfigEntry(domain=DOMAIN, title="Porch", data={"light": REAL}, unique_id=REAL,
+                            options={"layers": LAYERS})  # fmt: skip
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
     er.async_get(hass).async_update_entity(REAL, new_entity_id="light.real_raw")
     await hass.async_block_till_done()
-    assert entry.subentries["porch"].data["light"] == "light.real_raw"
-    await call(hass, "turn_on", DOOR)
+    assert entry.data["light"] == "light.real_raw" and entry.unique_id == "light.real_raw"
+    await call(hass, "turn_on", DOOR)  # the layers keep their entity ids
     assert hass.states.get("light.real_raw").state == "on"
 
 
 async def test_wall_switch_back_on_is_by_hand(hass, clock):
-    await setup(hass, real_on=False, wall_switch=True)
+    await setup(hass, real_on=False, options={"wall_switch": True, "layers": LAYERS})
     attrs = dict(hass.states.get(REAL).attributes)
     hass.states.async_set(REAL, "unavailable", attrs)  # switched off at the wall
     await hass.async_block_till_done()
@@ -516,16 +474,3 @@ async def test_without_wall_switch_back_on_shows_the_normal_state(hass, clock):
     hass.states.async_set(REAL, "on", {**attrs, "brightness": 255})
     await hass.async_block_till_done()
     assert hass.states.get(REAL).state == "off"
-
-
-async def test_removing_the_integration_gives_every_light_back(hass, clock):
-    from homeassistant.helpers import entity_registry as er
-
-    entry = await _empty_entry(hass, light_unique_id="real")
-    await _add(hass, entry, light=REAL, layer="Door")
-    assert er.async_get(hass).async_get(REAL).platform == DOMAIN
-    await hass.config_entries.async_remove(entry.entry_id)
-    await hass.async_block_till_done()
-    back = er.async_get(hass).async_get(REAL)
-    assert back.platform == "template" and back.hidden_by is None
-    assert er.async_get(hass).async_get("light.real_raw") is None

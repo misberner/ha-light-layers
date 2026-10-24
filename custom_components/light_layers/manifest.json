@@ -9,9 +9,8 @@
     "light"
   ],
   "documentation": "https://github.com/misberner/ha-light-layers",
-  "integration_type": "service",
+  "integration_type": "helper",
   "iot_class": "calculated",
   "requirements": [],
-  "version": "0.3.0",
-  "single_config_entry": true
+  "version": "0.4.0"
 }
