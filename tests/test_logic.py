@@ -1,104 +1,125 @@
-"""Temporary light overrides over a recorded base (custom_components/light_layers/logic.py)."""
+"""Layers over a base (custom_components/light_layers/logic.py)."""
 
 import pytest
 
-from custom_components.light_layers import logic as ll
+from custom_components.light_layers import logic
+
+DOOR, DARKEN = "door", "darken"
 
 
-def test_config_rejects_unknown_settings():
-    with pytest.raises(KeyError):
-        ll.config({"override_minuts": 3})
+def state(on=True, brightness=15, layers=None):
+    st = logic.new_state(on, {"brightness": brightness} if on else {})
+    logic.configure(st, layers or {DOOR: 10})
+    return st
 
 
-def test_without_override_commands_pass_through():
-    layer = ll.new_layer()
-    ll.command(layer, "turn_on", {"brightness": 15})
-    assert ll.step(layer, 0) == ("turn_on", {"brightness": 15})
-    assert ll.step(layer, 1) is None  # nothing new to send
-    ll.command(layer, "turn_off")
-    assert ll.step(layer, 2) == ("turn_off", {})
+def test_base_alone_is_shown():
+    st = state()
+    assert logic.target(st) == {"on": True, "attrs": {"brightness": 15}}
+    assert logic.top(st) == logic.BASE
 
 
-def test_schedule_dims_during_override_light_follows_afterwards():
-    """22:58 door, 23:00 the schedule dims to 2: bright until 23:03, then 2."""
-    layer = ll.new_layer(on=True, attrs={"brightness": 15, "color_temp_kelvin": 2700})
-    ll.step(layer, 0)
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    assert ll.step(layer, 0) == ("turn_on", {"brightness_pct": 60, "color_temp_kelvin": 2700})
-    ll.command(layer, "turn_on", {"brightness": 2})
-    assert ll.step(layer, 2) is None  # recorded, not shown
-    assert ll.step(layer, 5) == ("turn_on", {"brightness": 2, "color_temp_kelvin": 2700})
+def test_a_layer_on_shows_itself_over_the_base():
+    st = state()
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    assert logic.top(st) == DOOR
+    assert logic.target(st) == {"on": True, "attrs": {"brightness": 255}}
 
 
-def test_switch_off_during_override_light_goes_off_afterwards():
-    layer = ll.new_layer(on=True, attrs={"brightness": 15})
-    ll.step(layer, 0)
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    ll.step(layer, 0)
-    ll.command(layer, "turn_off")
-    assert ll.step(layer, 1) is None
-    assert ll.step(layer, 5) == ("turn_off", {})
+def test_commands_to_the_base_while_covered_show_once_the_layer_goes_off():
+    """Door at 22:58 brightens; the 23:00 schedule dims; the door layer off at 23:03."""
+    st = state()
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.command(st, logic.BASE, "turn_on", {"brightness": 2}, now=2)
+    assert logic.target(st)["attrs"] == {"brightness": 255}
+    logic.command(st, DOOR, "turn_off", now=5)
+    assert logic.target(st) == {"on": True, "attrs": {"brightness": 2}}
 
 
-def test_override_turns_an_off_light_on():
-    layer = ll.new_layer(on=False, attrs={"brightness": 15})
-    ll.step(layer, 0)
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    assert ll.step(layer, 0) == ("turn_on", {"brightness_pct": 60})
-    assert ll.step(layer, 5) == ("turn_off", {})
+def test_base_off_during_a_layer_goes_off_afterwards():
+    st = state()
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.command(st, logic.BASE, "turn_off", now=2)
+    assert logic.target(st)["on"] is True
+    logic.command(st, DOOR, "turn_off", now=3)
+    assert logic.target(st)["on"] is False and logic.step(st) == ("turn_off", {})
 
 
-def test_again_extends_never_shortens():
-    layer = ll.new_layer()
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=3)
-    assert ll.next_end(layer) == 8
-    ll.override(layer, "door", {"brightness_pct": 60}, 1, now=4)
-    assert ll.next_end(layer) == 8
+def test_a_layer_takes_what_it_leaves_open_from_the_base():
+    st = state()
+    logic.command(st, logic.BASE, "turn_on", {"color_temp_kelvin": 2700}, now=0)
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    assert logic.target(st)["attrs"] == {"brightness": 255, "color_temp_kelvin": 2700}
 
 
-def test_higher_priority_wins_and_the_next_takes_over():
-    layer = ll.new_layer(on=True, attrs={"brightness": 15})
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    ll.override(layer, "bell", {"brightness_pct": 100}, 2, now=1, priority=10)
-    assert ll.target(layer, 1)["attrs"]["brightness_pct"] == 100
-    assert ll.target(layer, 3)["attrs"]["brightness_pct"] == 60
-    assert ll.target(layer, 5)["attrs"] == {"brightness": 15}
+def test_highest_priority_wins_and_the_next_takes_over():
+    st = state(layers={DOOR: 10, DARKEN: 20})
+    logic.command(st, DARKEN, "turn_on", {"brightness": 5}, now=1)
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=2)
+    assert logic.top(st) == DARKEN
+    logic.command(st, DARKEN, "turn_off", now=3)
+    assert logic.top(st) == DOOR
 
 
-def test_by_hand_ends_overrides_and_becomes_the_base():
-    layer = ll.new_layer(on=True, attrs={"brightness": 15})
-    ll.override(layer, "door", {"brightness_pct": 60}, 5, now=0)
-    ll.step(layer, 0)
-    ll.by_hand(layer, False, {})
-    assert ll.active(layer, 1) is None
-    assert ll.target(layer, 1) == {"on": False, "attrs": {"brightness": 15}}
+def test_equal_priority_the_last_switched_on_wins():
+    st = state(layers={DOOR: 10, DARKEN: 10})
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.command(st, DARKEN, "turn_on", {"brightness": 5}, now=2)
+    assert logic.top(st) == DARKEN
+    logic.command(st, DOOR, "turn_on", {"brightness": 200}, now=3)  # already on: no change
+    assert logic.top(st) == DARKEN
 
 
-def test_colour_replaces_colour_brightness_replaces_brightness():
-    layer = ll.new_layer(on=True, attrs={"brightness": 15, "xy_color": [0.5, 0.4]})
-    ll.command(layer, "turn_on", {"color_temp_kelvin": 2700, "brightness_pct": 40})
-    assert layer["base"]["attrs"] == {"color_temp_kelvin": 2700, "brightness_pct": 40}
+def test_a_layer_keeps_its_settings_while_off():
+    st = state()
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.command(st, DOOR, "turn_off", now=2)
+    logic.command(st, DOOR, "turn_on", now=3)
+    assert logic.target(st)["attrs"] == {"brightness": 255}
 
 
-def test_toggle_and_override_off():
-    layer = ll.new_layer(on=True)
-    ll.command(layer, "toggle")
-    assert layer["base"]["on"] is False
-    ll.command(layer, "turn_on")
-    ll.override(layer, "night", {"on": False}, 5, now=0)
-    assert ll.target(layer, 0) == {"on": False, "attrs": {}}
+def test_by_hand_becomes_the_base_and_turns_the_layers_off():
+    st = state()
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.by_hand(st, True, {"brightness": 80})
+    assert logic.top(st) == logic.BASE
+    assert st["layers"][DOOR]["on"] is False
+    assert logic.target(st) == {"on": True, "attrs": {"brightness": 80}}
+    logic.by_hand(st, False, {})
+    assert logic.target(st)["on"] is False
+
+
+def test_step_sends_only_changes():
+    st = state()
+    assert logic.step(st) == ("turn_on", {"brightness": 15})
+    assert logic.step(st) is None
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    assert logic.step(st) == ("turn_on", {"brightness": 255})
+
+
+def test_configure_adds_and_removes_layers():
+    st = state(layers={DOOR: 10})
+    logic.command(st, DOOR, "turn_on", {"brightness": 255}, now=1)
+    logic.configure(st, {DARKEN: 5})
+    assert set(st["layers"]) == {logic.BASE, DARKEN}
+    assert st["layers"][DARKEN]["on"] is False and st["layers"][DARKEN]["priority"] == 5
 
 
 def test_fill_takes_only_what_the_base_does_not_say():
-    layer = ll.new_layer(on=True, attrs={"color_temp_kelvin": 2700})
-    ll.fill(layer, {"brightness": 40, "xy_color": [0.5, 0.4]})
-    assert layer["base"]["attrs"] == {"color_temp_kelvin": 2700, "brightness": 40}
+    st = logic.new_state(True, {})
+    logic.fill(st, {"brightness": 30, "color_temp_kelvin": 3000})
+    assert st["layers"][logic.BASE]["attrs"] == {"brightness": 30, "color_temp_kelvin": 3000}
+    logic.fill(st, {"brightness": 99})
+    assert st["layers"][logic.BASE]["attrs"]["brightness"] == 30
 
 
-def test_by_hand_without_effect_ends_the_effect():
-    layer = ll.new_layer(on=True, attrs={"brightness": 15, "effect": "candle"})
-    ll.by_hand(layer, True, {"brightness": 15})
-    assert "effect" not in layer["base"]["attrs"]
-    ll.command(layer, "turn_on", {"effect": "off"})
-    assert "effect" not in layer["base"]["attrs"]
+def test_colour_replaces_colour_and_no_effect_is_dropped():
+    st = state()
+    logic.command(st, logic.BASE, "turn_on", {"hs_color": [10, 50]}, now=0)
+    logic.command(st, logic.BASE, "turn_on", {"color_temp_kelvin": 3000, "effect": "off"}, now=0)
+    assert st["layers"][logic.BASE]["attrs"] == {"brightness": 15, "color_temp_kelvin": 3000}
+
+
+def test_config_rejects_typos():
+    with pytest.raises(KeyError):
+        logic.config({"own_change_secs": 1})

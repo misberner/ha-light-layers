@@ -1,74 +1,108 @@
 # Light Layers
 
-A stand-in light for Home Assistant whose ordinary commands set the light's
-*normal state*, with timed overrides on top.
+Layers for a Home Assistant light. Each layer is a light entity of its own;
+the real light shows the highest layer that is on.
 
-The usual "brighten for 5 minutes, then restore" takes a snapshot and puts it
-back. If a schedule changes the light in between, the snapshot is stale: the
-light goes off immediately, or comes back at the old brightness for the rest
-of the night. Here, commands during an override are recorded but not shown;
-when the override ends the light shows its normal state *as it is then*.
+The usual "brighten for a few minutes, then restore" takes a snapshot and puts
+it back. If a schedule changes the light in between, the snapshot is stale:
+the light goes off immediately, or comes back at the old brightness for the
+rest of the night. Here the schedule changes the base layer while a layer
+above it is on; when that layer goes off, the light shows the base *as it is
+then*.
 
 ## How it works
 
-- **Stand-in:** add the helper (Settings → Devices & services → Helpers →
-  Light Layers) for a real light. The stand-in is an ordinary light: schedules,
-  scenes, dashboards and voice use it like the real one. Without an override
-  it passes every command straight through. It mirrors the real light's colour
-  modes, colour temperature range, effects and transitions, and sits on the
-  real light's device, so area and device targets reach it.
-- **Override:** `light_layers.override` shows something else for a while:
-  brightness, colour temperature, colour, effect, or `off: true`. `key` names
-  it: setting the same key again extends it (never shortens). With several
-  active, the highest `priority` wins, and the next takes over when it ends.
-  `light_layers.cancel` ends one (or all).
-- **At the real light:** any change that did not come through the stand-in is
+- **Base:** add the helper (Settings → Devices & services → Helpers → Light
+  Layers) for a real light. Its light, named as you enter it, is the base
+  layer: the light's normal state. Schedules, scenes, dashboards and voice use
+  it like the real light, and it says on or off. It mirrors the real light's
+  colour modes, colour temperature range, effects and transitions.
+- **Layers:** under *Configure → Add a layer*, give a layer a name and a
+  priority. It is a light too (`light.<base>_<layer>`). While it is on, the
+  real light shows it, with what it leaves open (a layer that only sets a
+  brightness) from the base; while it is off, it lets the layers below
+  through. With several on, the highest priority wins (among equal ones the
+  one switched on last), and the next takes over when it goes off. A layer
+  keeps its brightness and colour while off, like any light.
+- **Timing is the automation's:** a layer stays on until something turns it
+  off, so "2 minutes after the door closed" is an ordinary trigger with
+  `for:` (see below), and opening the door again simply starts over.
+- **At the real light:** any change that did not come through a layer is
   taken as meant for the real light itself (its wall switch, the vendor app,
-  an automation for a button at the light): it ends all overrides and becomes
-  the new normal state. So everything that should respect overrides
-  (schedules, scenes, labels used as targets) must target the stand-in.
+  an automation for a button at the light): it becomes the base, and the
+  layers above go off. So everything that should respect the layers
+  (schedules, scenes, labels used as targets) must target the base or a layer.
   A change is on/off, brightness, colour (temperature) or effect beyond a small
   tolerance; how the light renders a command (clamped, rounded, gamut-clipped)
   and reports that change nothing shown are not changes.
-- **Effects:** when an override with an effect ends, or the normal state has
+- **Effects:** when a layer with an effect goes off, or the layer shown has
   none, the light's own "no effect" (`off`, `none`, `Solid`, …) is sent.
 - **Wall switch:** for a smart bulb behind an ordinary switch, turn on
-  *Powered through a wall switch*: coming back on after being unreachable is
-  then someone at the switch and becomes the normal state. Without it, the
-  light is brought back to its normal state (a power cut).
-- **Renaming the real light:** the stand-in follows the new entity id.
-- **Restarts:** the normal state and running overrides are restored; on start
-  and when the real light comes back from unavailable, it is brought in line.
-  With nothing to restore, the stand-in takes the real light as it is.
+  *Powered through a wall switch* (*Configure → Settings*): coming back on after
+  being unreachable is then someone at the switch and becomes the base. Without
+  it, the light is brought back to what it should show (a power cut).
+- **Renaming the real light:** the layers follow the new entity id.
+- **Restarts:** all layers are restored; on start and when the real light comes
+  back from unavailable, it is brought in line. With nothing to restore, the
+  base takes the real light as it is.
 - **Brightness the base doesn't name:** a bare `turn_on`, or a base recorded
-  while the light was off, has no brightness. The stand-in takes it (and the
-  colour) from what the real light shows, so after an override the light
-  doesn't stay at the override's brightness.
+  while the light was off, has no brightness. The base takes it (and the
+  colour) from what the real light shows, so after a layer goes off the light
+  doesn't stay at the layer's brightness.
 
-The stand-in's own state is the normal state; attribute `showing` says
-whether an override is on the real light right now, `overrides` lists them
-with their end.
+The base's attribute `showing` names the layer on the real light right now
+(`base` for itself); each layer has `priority` and `showing` (true or false).
+All layers sit on the real light's device. The layers above the base are
+hidden, so area, device and label targets ("all lights in the garden on")
+reach only the base and never leave a layer on; automations reach a layer by
+its entity id.
+
+## Example: brighter while the door is open, and 2 minutes after
+
+A layer *Door* (priority 10) on the base *Hausnummer*:
 
 ```yaml
-action: light_layers.override
-target:
-  entity_id: light.hausnummer
-data:
-  key: door_night
-  brightness_pct: 60
-  minutes: 5
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.front_door
+    to: "on"
+    id: open
+  - trigger: state
+    entity_id: binary_sensor.front_door
+    to: "off"
+    for: { minutes: 2 }
+    id: closed
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: open
+          - condition: state
+            entity_id: sun.sun
+            state: below_horizon
+        sequence:
+          - action: light.turn_on
+            target: { entity_id: light.hausnummer_door }
+            data: { brightness_pct: 100 }
+      - conditions:
+          - condition: trigger
+            id: closed
+        sequence:
+          - action: light.turn_off
+            target: { entity_id: light.hausnummer_door }
+mode: queued
 ```
 
 ## Setting it up for an existing light
 
 1. Rename the real light's entity (e.g. `light.hausnummer` →
    `light.hausnummer_raw`) and hide it.
-2. Add the helper for it with the old name, so the stand-in takes over the old
+2. Add the helper for it with the old name, so the base takes over the old
    entity id and automations, scenes and dashboards use it unchanged.
-3. Move labels used as targets to the stand-in: Home Assistant skips hidden
+3. Move labels used as targets to the base: Home Assistant skips hidden
    entities for label, area and device targets, so the hidden real light no
-   longer gets them. Area and device targets reach the stand-in on their own.
-4. Expose the stand-in, not the real light, to voice assistants and HomeKit.
+   longer gets them. Area and device targets reach the base on its own.
+4. Expose the base, not the real light, to voice assistants and HomeKit.
 
 ## Development
 

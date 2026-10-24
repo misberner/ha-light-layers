@@ -1,4 +1,4 @@
-"""Light Layers: a stand-in light whose commands set a base, with timed overrides on top."""
+"""Light Layers: a real light shown through layers of light entities."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device import async_entity_id_to_device_id
 from homeassistant.helpers.helper_integration import async_handle_source_entity_changes
+from homeassistant.helpers.storage import Store
 
-from .const import CONF_LIGHT
+from .const import CONF_LIGHT, DOMAIN
 
 PLATFORMS = [Platform.LIGHT]
 
@@ -22,7 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry, data={**entry.data, CONF_LIGHT: entity_id}, unique_id=entity_id
         )
 
-    # renames, and the real light moving to another device (the stand-in sits on its device)
+    # renames, and the real light moving to another device (the layers sit on its device)
     entry.async_on_unload(
         async_handle_source_entity_changes(
             hass,
@@ -43,3 +44,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()

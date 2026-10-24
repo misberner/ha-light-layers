@@ -1,19 +1,24 @@
-"""A light's normal state, with temporary overrides on top (the layered light entity).
+"""A real light shown through layers of light entities (no Home Assistant here).
 
-Every ordinary command (schedules, scenes, dashboards, voice) goes through
-a stand-in light and sets the light's *base*: what it should be with no
-override.  Overrides ("door opened at night: 60 % for 5 minutes") sit on
-top with a priority and an end; the light shows the highest active one,
-or the base.  Commands during an override are recorded in the base but not
-shown, so when the override ends the light goes to the state it would be
-in now, not back to how it was before.
+Every layer is a light of its own.  The base layer is the light's normal
+state: schedules, scenes, dashboards and voice use it like the real light,
+and it says on or off.  The layers above it each have a priority; one that is
+off is transparent, one that is on shows itself over everything below.  The
+real light shows the highest layer that is on (the most recently switched on
+among equals), with what it leaves open (a layer that only sets a brightness)
+taken from the base, or the base itself.
 
-A layer is a dict: base {on, attrs}, overrides {key: {attrs, until,
-priority, set_at}}, applied (what was last sent to the real light).
+Commands to a layer that is not shown are recorded, not shown: when the
+layers above go off, the light shows the state it should be in now, not the
+one it had before.
+
+State: {"layers": {id: {"on", "attrs", "priority", "on_at"}}, "applied": the
+target last sent to the real light}; the base is BASE, priority below all.
 """
 
+BASE = "base"
+
 DEFAULTS = {
-    "override_minutes": 5.0,
     "own_change_seconds": 10.0,  # real-light reports this soon after a command are ours
 }
 
@@ -35,8 +40,25 @@ def config(overrides=None):
     return cfg
 
 
-def new_layer(on=False, attrs=None):
-    return {"base": {"on": on, "attrs": dict(attrs or {})}, "overrides": {}, "applied": None}
+def _layer(on=False, attrs=None, priority=0):
+    return {"on": on, "attrs": dict(attrs or {}), "priority": priority, "on_at": 0.0}
+
+
+def new_state(on=False, attrs=None):
+    return {"layers": {BASE: _layer(on, attrs)}, "applied": None}
+
+
+def configure(state, priorities):
+    """Bring the layers in line with the configured ones ({id: priority}).
+
+    New layers start off (transparent); removed ones go; the base stays.
+    """
+    layers = state["layers"]
+    layers.setdefault(BASE, _layer())
+    for key in [k for k in layers if k != BASE and k not in priorities]:
+        del layers[key]
+    for key, priority in priorities.items():
+        layers.setdefault(key, _layer())["priority"] = priority
 
 
 def _merge(attrs, update):
@@ -51,88 +73,67 @@ def _merge(attrs, update):
     return out
 
 
-def fill(layer, attrs):
+def command(state, key, action, data=None, now=0.0):
+    """turn_on / turn_off / toggle of one layer."""
+    layer = state["layers"][key]
+    if action == "toggle":
+        action = "turn_off" if layer["on"] else "turn_on"
+    if action == "turn_off":
+        layer["on"] = False
+        return
+    if not layer["on"]:
+        layer["on_at"] = now
+    layer["on"] = True
+    layer["attrs"] = _merge(layer["attrs"], data or {})
+
+
+def fill(state, attrs):
     """Take what the base does not say (brightness, colour) from what the light shows.
 
     A base recorded while the light was off, or set by a bare turn_on, has no
-    brightness; without one, the light would come back at an override's.
+    brightness; without one, the light would stay at a layer's after it goes off.
     """
-    base = layer["base"]["attrs"]
+    base = state["layers"][BASE]["attrs"]
     for group in (BRIGHTNESS, COLOUR):
         if not any(k in base for k in group):
             base.update({k: v for k, v in attrs.items() if k in group})
 
 
-def command(layer, action, data=None):
-    """An ordinary turn_on / turn_off / toggle: it sets the base."""
-    base = layer["base"]
-    if action == "toggle":
-        action = "turn_off" if base["on"] else "turn_on"
-    if action == "turn_off":
-        base["on"] = False
-    else:
-        base["on"] = True
-        base["attrs"] = _merge(base["attrs"], data or {})
-
-
-def override(layer, key, attrs, minutes, now, priority=0):
-    """Show *attrs* for *minutes* from *now* (minutes; again: extend, never shorten)."""
-    previous = layer["overrides"].get(key)
-    until = now + minutes
-    if previous:
-        until = max(until, previous["until"])
-    layer["overrides"][key] = {"attrs": dict(attrs), "until": until, "priority": priority,
-                               "set_at": now}  # fmt: skip
-
-
-def cancel(layer, key=None):
-    if key is None:
-        layer["overrides"].clear()
-    else:
-        layer["overrides"].pop(key, None)
-
-
-def by_hand(layer, on, attrs):
-    """The real light was changed by hand: that is the new base, overrides end."""
-    layer["overrides"].clear()
+def by_hand(state, on, attrs):
+    """The real light was changed by hand: that is the new base, the layers above go off."""
+    for key, layer in state["layers"].items():
+        if key != BASE:
+            layer["on"] = False
+    base = state["layers"][BASE]
     if not on:
-        layer["base"]["on"] = False
+        base["on"] = False
         return
-    kept = {k: v for k, v in layer["base"]["attrs"].items() if k != "effect"}  # shown, or none
-    layer["base"] = {"on": True, "attrs": _merge(kept, attrs)}
+    kept = {k: v for k, v in base["attrs"].items() if k != "effect"}  # shown, or none
+    base["on"], base["attrs"] = True, _merge(kept, attrs)
 
 
-def active(layer, now):
-    """The override shown now, as (key, override), or None; drops ended ones."""
-    for key in [k for k, o in layer["overrides"].items() if o["until"] <= now]:
-        del layer["overrides"][key]
-    if not layer["overrides"]:
-        return None
-    return max(layer["overrides"].items(), key=lambda kv: (kv[1]["priority"], kv[1]["set_at"]))
+def top(state):
+    """The layer shown now: the highest that is on, else the base."""
+    above = [(layer["priority"], layer["on_at"], key)
+             for key, layer in state["layers"].items() if key != BASE and layer["on"]]  # fmt: skip
+    return max(above)[2] if above else BASE
 
 
-def target(layer, now):
+def target(state):
     """What the real light should show: {"on": bool, "attrs": {...}}."""
-    top = active(layer, now)
-    if top is None:
-        return {"on": layer["base"]["on"], "attrs": dict(layer["base"]["attrs"])}
-    attrs = top[1]["attrs"]
-    if attrs.get("on") is False:
-        return {"on": False, "attrs": {}}
-    return {"on": True, "attrs": _merge(layer["base"]["attrs"], attrs)}
+    base = state["layers"][BASE]
+    key = top(state)
+    if key == BASE:
+        return {"on": base["on"], "attrs": dict(base["attrs"])}
+    return {"on": True, "attrs": _merge(base["attrs"], state["layers"][key]["attrs"])}
 
 
-def step(layer, now):
+def step(state):
     """The service call that brings the real light to its target, or None."""
-    want = target(layer, now)
-    if want == layer["applied"]:
+    want = target(state)
+    if want == state["applied"]:
         return None
-    layer["applied"] = want
+    state["applied"] = want
     if not want["on"]:
         return ("turn_off", {})
     return ("turn_on", dict(want["attrs"]))
-
-
-def next_end(layer):
-    ends = [o["until"] for o in layer["overrides"].values()]
-    return min(ends) if ends else None

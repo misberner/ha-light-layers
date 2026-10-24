@@ -2,12 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Light with overrides",
-        "description": "A stand-in for a real light. Its commands set the light's normal state; overrides show something else for a while, then the light returns to the normal state as it is by then.",
+        "title": "Layered light",
+        "description": "Layers for a real light. The new light (named as entered) is the base layer, the light's normal state: use it like the real light. Add layers above it under Configure; each is a light of its own, and the real light shows the highest one that is on.",
         "data": {
           "name": "Name",
           "light": "Real light",
-          "minutes": "Default override length",
           "wall_switch": "Powered through a wall switch"
         },
         "data_description": {
@@ -16,77 +15,48 @@
       }
     },
     "error": {
-      "layered": "That is already a light with overrides; pick the real light."
+      "layered": "That is already a layered light; pick the real light."
     },
     "abort": {
-      "already_configured": "This light already has a stand-in."
+      "already_configured": "This light already has layers."
     }
   },
   "options": {
     "step": {
       "init": {
+        "title": "Layers",
+        "menu_options": {
+          "add_layer": "Add a layer",
+          "remove_layer": "Remove layers",
+          "settings": "Settings"
+        }
+      },
+      "add_layer": {
+        "title": "Add a layer",
+        "description": "A light of its own above the base. While it is on, the real light shows it (the highest priority wins); off, it lets the layers below through.",
         "data": {
-          "minutes": "Default override length",
+          "name": "Name",
+          "priority": "Priority"
+        }
+      },
+      "remove_layer": {
+        "title": "Remove layers",
+        "data": {
+          "layers": "Layers"
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "data": {
           "wall_switch": "Powered through a wall switch"
         },
         "data_description": {
           "wall_switch": "Smart bulb behind an ordinary switch: when it comes back on after being unreachable, someone switched it on there, so that becomes the normal state."
         }
       }
-    }
-  },
-  "services": {
-    "override": {
-      "name": "Override",
-      "description": "Show something else on the light for a while. Setting the same key again extends it; the highest priority wins. When it ends the light shows its normal state as it is then.",
-      "fields": {
-        "key": {
-          "name": "Key",
-          "description": "Names the override, so it can be extended or cancelled."
-        },
-        "minutes": {
-          "name": "Minutes",
-          "description": "How long; default from the light's options."
-        },
-        "priority": {
-          "name": "Priority",
-          "description": "Higher wins while several are active."
-        },
-        "off": {
-          "name": "Off",
-          "description": "Keep the light off instead."
-        },
-        "brightness_pct": {
-          "name": "Brightness (%)",
-          "description": "Brightness in percent."
-        },
-        "brightness": {
-          "name": "Brightness",
-          "description": "Brightness 0-255."
-        },
-        "color_temp_kelvin": {
-          "name": "Colour temperature",
-          "description": "In kelvin."
-        },
-        "rgb_color": {
-          "name": "Colour",
-          "description": "RGB colour."
-        },
-        "effect": {
-          "name": "Effect",
-          "description": "Light effect."
-        }
-      }
     },
-    "cancel": {
-      "name": "Cancel override",
-      "description": "End an override now (all of them without a key).",
-      "fields": {
-        "key": {
-          "name": "Key",
-          "description": "The override to end; empty ends all."
-        }
-      }
+    "error": {
+      "duplicate": "There already is a layer with that name."
     }
   }
 }

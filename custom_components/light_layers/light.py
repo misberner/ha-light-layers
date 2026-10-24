@@ -1,13 +1,11 @@
-"""The layered light: stands in for a real light, its state is the base."""
+"""The layers of a real light: one light entity per layer, the real light shows the top."""
 
 from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_MODE,
@@ -36,31 +34,16 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, State, callback
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_platform
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device import async_entity_id_to_device
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import (
-    async_track_point_in_utc_time,
-    async_track_state_change_event,
-)
-from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.storage import Store
 from homeassistant.util import color as color_util
 from homeassistant.util import slugify
 
 from . import logic
-from .const import (
-    ATTR_KEY,
-    ATTR_OFF,
-    ATTR_PRIORITY,
-    CONF_LIGHT,
-    CONF_MINUTES,
-    CONF_WALL_SWITCH,
-    DEFAULT_KEY,
-    DEFAULT_MINUTES,
-    SERVICE_CANCEL,
-    SERVICE_OVERRIDE,
-)
+from .const import CONF_LAYERS, CONF_LIGHT, CONF_PRIORITY, CONF_WALL_SWITCH, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,26 +59,12 @@ MODE_ATTR = {
 ATTR_MODE = {v: k for k, v in MODE_ATTR.items()}
 UNSET = (None, STATE_UNAVAILABLE, STATE_UNKNOWN)
 OWN_CONTEXTS = 20
+SAVE_DELAY = 1.0
 # how far the real light may be from what it should show and still show it
 BRIGHTNESS_STEPS = 3
 MIREDS = 5
 HUE_DEGREES = 5.0
 SATURATION = 5.0
-
-OVERRIDE_SCHEMA = {
-    vol.Optional(ATTR_KEY, default=DEFAULT_KEY): cv.string,
-    vol.Optional(CONF_MINUTES): vol.All(vol.Coerce(float), vol.Range(min=0.05)),
-    vol.Optional(ATTR_PRIORITY, default=0): vol.Coerce(int),
-    vol.Optional(ATTR_OFF, default=False): cv.boolean,
-    vol.Exclusive(ATTR_BRIGHTNESS, "brightness"): vol.All(vol.Coerce(int), vol.Range(0, 255)),
-    vol.Exclusive("brightness_pct", "brightness"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
-    vol.Exclusive(ATTR_COLOR_TEMP_KELVIN, "colour"): vol.Coerce(int),
-    vol.Exclusive(ATTR_HS_COLOR, "colour"): vol.All(vol.ExactSequence((vol.Coerce(float),) * 2)),
-    vol.Exclusive(ATTR_XY_COLOR, "colour"): vol.All(vol.ExactSequence((vol.Coerce(float),) * 2)),
-    vol.Exclusive(ATTR_RGB_COLOR, "colour"): vol.All(vol.ExactSequence((cv.byte,) * 3)),
-    vol.Optional(ATTR_EFFECT): cv.string,
-}
-CANCEL_SCHEMA = {vol.Optional(ATTR_KEY): cv.string}
 
 
 def _seconds() -> float:
@@ -107,7 +76,7 @@ def _minutes() -> float:
 
 
 def attrs_of(state: State) -> dict[str, Any]:
-    """The base attributes a real light shows: brightness, the colour of its mode, effect."""
+    """The attributes a real light shows: brightness, the colour of its mode, effect."""
     attrs = {}
     if (brightness := state.attributes.get(ATTR_BRIGHTNESS)) is not None:
         attrs[ATTR_BRIGHTNESS] = brightness
@@ -120,59 +89,268 @@ def attrs_of(state: State) -> dict[str, Any]:
     return attrs
 
 
-class LayerData(ExtraStoredData):
-    def __init__(self, layer: dict) -> None:
-        self.layer = layer
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"layer": self.layer}
-
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    entity = LayeredLight(entry)
-    # its own name as entity id, not prefixed with area and device: the stand-in takes
-    # over the id the real light had
-    entity.entity_id = f"light.{slugify(entry.title)}"
-    # on the real light's device: area and device targets reach the stand-in, and
-    # skip the real light once it is hidden
-    entity.device_entry = async_entity_id_to_device(hass, entry.data[CONF_LIGHT])
-    async_add_entities([entity])
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(SERVICE_OVERRIDE, OVERRIDE_SCHEMA, "async_override")
-    platform.async_register_entity_service(SERVICE_CANCEL, CANCEL_SCHEMA, "async_cancel")
+    controller = Controller(hass, entry)
+    await controller.async_start()
+    entry.async_on_unload(controller.async_stop)
+    title = slugify(entry.title)
+    entities = [LayerLight(controller, logic.BASE, entry.title, entry.entry_id, f"light.{title}")]
+    for layer in entry.options.get(CONF_LAYERS, []):
+        entities.append(
+            LayerLight(
+                controller,
+                layer["id"],
+                f"{entry.title} {layer['name']}",
+                f"{entry.entry_id}_{layer['id']}",
+                f"light.{title}_{slugify(layer['name'])}",
+            )
+        )
+    # on the real light's device: area and device targets reach the layers, and skip
+    # the real light once it is hidden
+    device = async_entity_id_to_device(hass, entry.data[CONF_LIGHT])
+    for entity in entities:
+        entity.device_entry = device
+    # layers removed in the options are gone for good
+    registry = er.async_get(hass)
+    wanted = {e.unique_id for e in entities}
+    for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg.unique_id not in wanted:
+            registry.async_remove(reg.entity_id)
+    async_add_entities(entities)
 
 
-class LayeredLight(LightEntity, RestoreEntity):
-    """Commands set the base; the real light shows the top override or the base."""
+class Controller:
+    """The layers of one real light: their state, and keeping the real light on the top one."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.real = entry.data[CONF_LIGHT]
+        self.state = logic.new_state()
+        self.entities: dict[str, LayerLight] = {}
+        self._own: list[str] = []  # contexts of our calls to the real light
+        self._settled_at = 0.0  # reports until then are still our command arriving
+        self._shown: State | None = None  # the real light's last report of our command
+        self._adopt = False  # nothing restored: take the real light's state when it shows up
+        self._cfg = logic.config()
+        self._store: Store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
+        self._unsub = None
+
+    @property
+    def real_state(self) -> State | None:
+        return self.hass.states.get(self.real)
+
+    @property
+    def available(self) -> bool:
+        st = self.real_state
+        return st is not None and st.state != STATE_UNAVAILABLE
+
+    def priorities(self) -> dict[str, int]:
+        layers = self.entry.options.get(CONF_LAYERS, [])
+        return {layer["id"]: layer[CONF_PRIORITY] for layer in layers}
+
+    def name_of(self, key: str) -> str:
+        if key == logic.BASE:
+            return "base"
+        for layer in self.entry.options.get(CONF_LAYERS, []):
+            if layer["id"] == key:
+                return layer["name"]
+        return key
+
+    # --- lifecycle ---------------------------------------------------------------
+
+    async def async_start(self) -> None:
+        stored = await self._store.async_load()
+        st = self.real_state
+        if stored and logic.BASE in (stored.get("layers") or {}):
+            self.state = {"layers": stored["layers"], "applied": None}
+            logic.configure(self.state, self.priorities())
+            # no command at start-up when the real light already shows the target
+            want = logic.target(self.state)
+            if st is not None and st.state not in UNSET and _matches(st, want):
+                self.state["applied"] = want
+        elif st is not None and st.state not in UNSET:
+            self._adopt_real(st)
+        else:
+            # the real light is not loaded yet (or unavailable): an empty base would
+            # switch it off when it comes, so take whatever it shows then
+            self._adopt = True
+        logic.configure(self.state, self.priorities())
+        self._unsub = async_track_state_change_event(self.hass, [self.real], self._real_changed)
+        if self.available:
+            await self.async_apply()
+
+    async def async_stop(self) -> None:
+        if self._unsub is not None:
+            self._unsub()
+            self._unsub = None
+        await self._store.async_save(self._data())
+
+    def _data(self) -> dict[str, Any]:
+        return {"layers": self.state["layers"]}
+
+    # --- commands ----------------------------------------------------------------
+
+    async def async_command(
+        self, key: str, action: str, kwargs: dict[str, Any], context: Context | None
+    ) -> None:
+        logic.command(self.state, key, action, kwargs, _minutes())
+        await self.async_apply(kwargs.get(ATTR_TRANSITION), context)
+
+    async def async_apply(
+        self, transition: float | None = None, parent: Context | None = None
+    ) -> None:
+        """Bring the real light to the top layer, save, write the layers' states."""
+        before = self.state["applied"]
+        call = logic.step(self.state) if self.available else None
+        if call is not None:
+            service, data = call
+            if service == "turn_on" and ATTR_EFFECT not in data and self._effect_on(before):
+                if (stop := self._stop_effect()) is not None:
+                    data[ATTR_EFFECT] = stop
+            if transition is not None and self._features() & LightEntityFeature.TRANSITION:
+                data[ATTR_TRANSITION] = transition
+            if "brightness_pct" in data:
+                data[ATTR_BRIGHTNESS] = round(data.pop("brightness_pct") * 255 / 100)
+            context = Context(parent_id=parent.id if parent else None)
+            self._own = (self._own + [context.id])[-OWN_CONTEXTS:]
+            self._settled_at = (
+                _seconds() + self._cfg["own_change_seconds"] + (data.get(ATTR_TRANSITION) or 0)
+            )
+            await self.hass.services.async_call(
+                "light", service, {ATTR_ENTITY_ID: self.real, **data}, context=context
+            )
+        self._store.async_delay_save(self._data, SAVE_DELAY)
+        self._write()
+
+    @callback
+    def _write(self) -> None:
+        for entity in self.entities.values():
+            if entity.hass is not None:
+                entity.async_write_ha_state()
+
+    # --- the real light ----------------------------------------------------------
+
+    @callback
+    def _real_changed(self, event: Event[EventStateChangedData]) -> None:
+        new, old = event.data["new_state"], event.data["old_state"]
+        if new is None or new.state in UNSET:
+            self._write()  # unavailable
+            return
+        if self._adopt:
+            self._adopt_real(new)
+            self._write()
+            return
+        if old is None or old.state in UNSET:
+            if self.entry.options.get(CONF_WALL_SWITCH) and new.state == STATE_ON:
+                # power back through the wall switch: someone switched it on there
+                self._by_hand(new)
+                return
+            # back: show what it should, whatever it came back with
+            self.state["applied"] = None
+            self.hass.async_create_task(self.async_apply())
+            return
+        ours = (
+            new.context.id in self._own
+            # still settling after our command (e.g. Zigbee reports without our context)
+            or _seconds() < self._settled_at
+        )
+        if ours or _same(new, self._shown) or _matches(new, self.state["applied"]):
+            # our command, as the light renders it (a clipped colour, a rounded
+            # brightness), or a report that changes nothing that is shown
+            if ours or self._shown is None:
+                self._shown = new
+            base = self.state["layers"][logic.BASE]
+            if logic.top(self.state) == logic.BASE and base["on"] and new.state == STATE_ON:
+                logic.fill(self.state, attrs_of(new))
+            return
+        self._by_hand(new)
+
+    @callback
+    def _by_hand(self, new: State) -> None:
+        self._shown = new
+        # not through a layer: meant for the real light itself (its switch, the
+        # vendor app, an automation for a button at it), so that is the base now
+        _LOGGER.debug("%s changed by hand: the base, layers above off", self.real)
+        logic.by_hand(self.state, new.state == STATE_ON, attrs_of(new))
+        self.state["applied"] = logic.target(self.state)
+        self._store.async_delay_save(self._data, SAVE_DELAY)
+        self._write()
+
+    def _features(self) -> LightEntityFeature:
+        st = self.real_state
+        return LightEntityFeature(st.attributes.get(ATTR_SUPPORTED_FEATURES, 0) if st else 0)
+
+    def _effect_on(self, before: dict | None) -> bool:
+        """Whether an effect was sent last or is running on the real light."""
+        if before and before["attrs"].get(ATTR_EFFECT) not in logic.NO_EFFECT:
+            return True
+        st = self.real_state
+        return st is not None and st.attributes.get(ATTR_EFFECT) not in logic.NO_EFFECT
+
+    def _stop_effect(self) -> str | None:
+        """The real light's own name for "no effect", if it has one."""
+        st = self.real_state
+        effects = (st.attributes.get(ATTR_EFFECT_LIST) if st else None) or []
+        if not self._features() & LightEntityFeature.EFFECT:
+            return None
+        for name in logic.NO_EFFECT:
+            if name in effects:
+                return name
+        return None
+
+    def _adopt_real(self, st: State) -> None:
+        self._adopt = False
+        self.state = logic.new_state(st.state == STATE_ON, attrs_of(st))
+        logic.configure(self.state, self.priorities())
+        self.state["applied"] = logic.target(self.state)
+
+
+class LayerLight(LightEntity):
+    """One layer of the real light: the base (the normal state) or one above it."""
 
     _attr_should_poll = False
     _attr_has_entity_name = False
 
-    def __init__(self, entry: ConfigEntry) -> None:
-        self._entry = entry
-        self._real = entry.data[CONF_LIGHT]
-        self._attr_name = entry.title
-        self._attr_unique_id = entry.entry_id
-        self._layer = logic.new_layer()
-        self._own: list[str] = []  # contexts of our calls to the real light
-        self._settled_at = 0.0  # reports until then are still our command arriving
-        self._shown: State | None = None  # the real light's last report of our command
-        self._unsub_end = None
-        self._cfg = logic.config()
-        self._adopt = False  # nothing restored: take the real light's state when it shows up
+    def __init__(
+        self, controller: Controller, key: str, name: str, unique_id: str, entity_id: str
+    ) -> None:
+        self._controller = controller
+        self._key = key
+        self._attr_name = name
+        self._attr_unique_id = unique_id
+        # its own name as entity id, not prefixed with area and device: the base takes
+        # over the id the real light had
+        self.entity_id = entity_id
+        # layers above the base are hidden: area, device and label targets ("all lights
+        # in the garden on") must not switch one on and leave it on; by entity id they
+        # are reached as usual
+        if key != logic.BASE:
+            self._attr_entity_registry_visible_default = False
+        controller.entities[key] = self
 
-    # --- capabilities and state, from the real light and the base ----------------
+    @property
+    def _layer(self) -> dict[str, Any]:
+        return self._controller.state["layers"][self._key]
+
+    @property
+    def _attrs(self) -> dict[str, Any]:
+        return self._layer["attrs"]
 
     @property
     def _real_state(self) -> State | None:
-        return self.hass.states.get(self._real)
+        return self._controller.real_state
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._controller.entities.pop(self._key, None)
+
+    # --- capabilities, from the real light ----------------------------------------
 
     @property
     def available(self) -> bool:
-        st = self._real_state
-        return st is not None and st.state != STATE_UNAVAILABLE
+        return self._controller.available
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
@@ -182,8 +360,7 @@ class LayeredLight(LightEntity, RestoreEntity):
 
     @property
     def supported_features(self) -> LightEntityFeature:
-        st = self._real_state
-        return LightEntityFeature(st.attributes.get(ATTR_SUPPORTED_FEATURES, 0) if st else 0)
+        return self._controller._features()
 
     @property
     def min_color_temp_kelvin(self) -> int:
@@ -200,19 +377,17 @@ class LayeredLight(LightEntity, RestoreEntity):
         st = self._real_state
         return st.attributes.get(ATTR_EFFECT_LIST) if st else None
 
-    @property
-    def is_on(self) -> bool:
-        return self._layer["base"]["on"]
+    # --- state, from the layer ----------------------------------------------------
 
     @property
-    def _base(self) -> dict[str, Any]:
-        return self._layer["base"]["attrs"]
+    def is_on(self) -> bool:
+        return self._layer["on"]
 
     @property
     def brightness(self) -> int | None:
-        if ATTR_BRIGHTNESS in self._base:
-            return self._base[ATTR_BRIGHTNESS]
-        if (pct := self._base.get("brightness_pct")) is not None:
+        if ATTR_BRIGHTNESS in self._attrs:
+            return self._attrs[ATTR_BRIGHTNESS]
+        if (pct := self._attrs.get("brightness_pct")) is not None:
             return round(pct * 255 / 100)
         return None
 
@@ -220,7 +395,7 @@ class LayeredLight(LightEntity, RestoreEntity):
     def color_mode(self) -> ColorMode:
         modes = self.supported_color_modes
         for key, mode in ATTR_MODE.items():
-            if key in self._base and mode in modes:
+            if key in self._attrs and mode in modes:
                 return mode
         if len(modes) == 1:
             return next(iter(modes))
@@ -235,233 +410,46 @@ class LayeredLight(LightEntity, RestoreEntity):
 
     @property
     def color_temp_kelvin(self) -> int | None:
-        return self._base.get(ATTR_COLOR_TEMP_KELVIN)
+        return self._attrs.get(ATTR_COLOR_TEMP_KELVIN)
 
     @property
     def hs_color(self):
-        return _tuple(self._base.get(ATTR_HS_COLOR))
+        return _tuple(self._attrs.get(ATTR_HS_COLOR))
 
     @property
     def xy_color(self):
-        return _tuple(self._base.get(ATTR_XY_COLOR))
+        return _tuple(self._attrs.get(ATTR_XY_COLOR))
 
     @property
     def rgb_color(self):
-        return _tuple(self._base.get(ATTR_RGB_COLOR))
+        return _tuple(self._attrs.get(ATTR_RGB_COLOR))
 
     @property
     def rgbw_color(self):
-        return _tuple(self._base.get(ATTR_RGBW_COLOR))
+        return _tuple(self._attrs.get(ATTR_RGBW_COLOR))
 
     @property
     def rgbww_color(self):
-        return _tuple(self._base.get(ATTR_RGBWW_COLOR))
+        return _tuple(self._attrs.get(ATTR_RGBWW_COLOR))
 
     @property
     def effect(self) -> str | None:
-        return self._base.get(ATTR_EFFECT)
+        return self._attrs.get(ATTR_EFFECT)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        top = logic.active(self._layer, _minutes())
-        overrides = {
-            key: {
-                "until": _iso(o["until"]),
-                "priority": o["priority"],
-                **({"off": True} if o["attrs"].get("on") is False else o["attrs"]),
-            }
-            for key, o in sorted(self._layer["overrides"].items())
-        }
-        return {
-            "real_light": self._real,
-            "showing": f"override {top[0]}" if top else "base",
-            "overrides": overrides,
-        }
-
-    @property
-    def extra_restore_state_data(self) -> LayerData:
-        return LayerData(self._layer)
-
-    # --- lifecycle ---------------------------------------------------------------
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self._cfg = logic.config()
-        restored = await self.async_get_last_extra_data()
-        layer = restored.as_dict().get("layer") if restored else None
-        if layer and "base" in layer:
-            self._layer = {
-                "base": layer["base"],
-                "overrides": layer.get("overrides") or {},
-                "applied": None,
-            }
-            # no command at start-up when the real light already shows the target
-            st = self._real_state
-            want = logic.target(self._layer, _minutes())
-            if st is not None and st.state not in UNSET and _matches(st, want):
-                self._layer["applied"] = want
-        elif (st := self._real_state) is not None and st.state not in UNSET:
-            self._adopt_real(st)
-        else:
-            # the real light is not loaded yet (or unavailable): an empty base would
-            # switch it off when it comes, so take whatever it shows then
-            self._adopt = True
-        self.async_on_remove(
-            async_track_state_change_event(self.hass, [self._real], self._real_changed)
-        )
-        self.async_on_remove(self._cancel_end_timer)
-        if self.available:
-            await self._apply()
-        else:
-            self._schedule_end()
+        shown = logic.top(self._controller.state)
+        if self._key == logic.BASE:
+            return {"real_light": self._controller.real, "showing": self._controller.name_of(shown)}
+        return {"priority": self._layer["priority"], "showing": shown == self._key}
 
     # --- commands ----------------------------------------------------------------
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        logic.command(self._layer, "turn_on", kwargs)
-        await self._apply(kwargs.get(ATTR_TRANSITION))
+        await self._controller.async_command(self._key, "turn_on", kwargs, self._context)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        logic.command(self._layer, "turn_off")
-        await self._apply(kwargs.get(ATTR_TRANSITION))
-
-    async def async_override(self, **kwargs: Any) -> None:
-        key = kwargs.pop(ATTR_KEY, DEFAULT_KEY)
-        minutes = kwargs.pop(CONF_MINUTES, None)
-        if minutes is None:
-            minutes = self._entry.options.get(CONF_MINUTES, DEFAULT_MINUTES)
-        priority = kwargs.pop(ATTR_PRIORITY, 0)
-        if kwargs.pop(ATTR_OFF, False):
-            attrs = {"on": False}
-        else:
-            attrs = {k: (list(v) if isinstance(v, tuple) else v) for k, v in kwargs.items()}
-            if "brightness_pct" in attrs:
-                attrs[ATTR_BRIGHTNESS] = round(attrs.pop("brightness_pct") * 255 / 100)
-        st = self._real_state
-        showing_base = logic.active(self._layer, _minutes()) is None
-        if showing_base and self.is_on and st is not None and st.state == STATE_ON:
-            logic.fill(self._layer, attrs_of(st))
-        logic.override(self._layer, key, attrs, minutes, _minutes(), priority)
-        await self._apply()
-
-    async def async_cancel(self, **kwargs: Any) -> None:
-        logic.cancel(self._layer, kwargs.get(ATTR_KEY))
-        await self._apply()
-
-    async def _apply(self, transition: float | None = None) -> None:
-        """Bring the real light to the target, write our state, time the next end."""
-        before = self._layer["applied"]
-        call = logic.step(self._layer, _minutes()) if self.available else None
-        if call is not None:
-            service, data = call
-            if service == "turn_on" and ATTR_EFFECT not in data and self._effect_on(before):
-                if (stop := self._stop_effect()) is not None:
-                    data[ATTR_EFFECT] = stop
-            if transition is not None and self.supported_features & LightEntityFeature.TRANSITION:
-                data[ATTR_TRANSITION] = transition
-            if "brightness_pct" in data:
-                data[ATTR_BRIGHTNESS] = round(data.pop("brightness_pct") * 255 / 100)
-            context = Context(parent_id=self._context.id if self._context else None)
-            self._own = (self._own + [context.id])[-OWN_CONTEXTS:]
-            self._settled_at = (
-                _seconds() + self._cfg["own_change_seconds"] + (data.get(ATTR_TRANSITION) or 0)
-            )
-            await self.hass.services.async_call(
-                "light", service, {ATTR_ENTITY_ID: self._real, **data}, context=context
-            )
-        self._schedule_end()
-        self.async_write_ha_state()
-
-    # --- the real light and the clock --------------------------------------------
-
-    @callback
-    def _real_changed(self, event: Event[EventStateChangedData]) -> None:
-        new, old = event.data["new_state"], event.data["old_state"]
-        if new is None or new.state in UNSET:
-            self.async_write_ha_state()  # unavailable
-            return
-        if self._adopt:
-            self._adopt_real(new)
-            self._schedule_end()
-            self.async_write_ha_state()
-            return
-        if old is None or old.state in UNSET:
-            if self._entry.options.get(CONF_WALL_SWITCH) and new.state == STATE_ON:
-                # power back through the wall switch: someone switched it on there
-                self._by_hand(new)
-                return
-            # back: show what it should, whatever it came back with
-            self._layer["applied"] = None
-            self.hass.async_create_task(self._apply())
-            return
-        ours = (
-            new.context.id in self._own
-            # still settling after our command (e.g. Zigbee reports without our context)
-            or _seconds() < self._settled_at
-        )
-        if ours or _same(new, self._shown) or _matches(new, self._layer["applied"]):
-            # our command, as the light renders it (a clipped colour, a rounded
-            # brightness), or a report that changes nothing that is shown
-            if ours or self._shown is None:
-                self._shown = new
-            showing_base = logic.active(self._layer, _minutes()) is None
-            if showing_base and self.is_on and new.state == STATE_ON:
-                logic.fill(self._layer, attrs_of(new))
-            return
-        self._by_hand(new)
-
-    @callback
-    def _by_hand(self, new: State) -> None:
-        self._shown = new
-        on = new.state == STATE_ON
-        # not through the stand-in: meant for the real light itself (its switch, the
-        # vendor app, an automation for a button at it), so that is the base now
-        _LOGGER.debug("%s: %s changed by hand, ending overrides", self.entity_id, self._real)
-        logic.by_hand(self._layer, on, attrs_of(new))
-        self._layer["applied"] = logic.target(self._layer, _minutes())
-        self._schedule_end()
-        self.async_write_ha_state()
-
-    def _effect_on(self, before: dict | None) -> bool:
-        """Whether an effect was sent last or is running on the real light."""
-        if before and before["attrs"].get(ATTR_EFFECT) not in logic.NO_EFFECT:
-            return True
-        st = self._real_state
-        return st is not None and st.attributes.get(ATTR_EFFECT) not in logic.NO_EFFECT
-
-    def _stop_effect(self) -> str | None:
-        """The real light's own name for "no effect", if it has one."""
-        effects = self.effect_list or []
-        if not self.supported_features & LightEntityFeature.EFFECT:
-            return None
-        for name in logic.NO_EFFECT:
-            if name in effects:
-                return name
-        return None
-
-    def _adopt_real(self, st: State) -> None:
-        self._adopt = False
-        self._layer = logic.new_layer(st.state == STATE_ON, attrs_of(st))
-        self._layer["applied"] = logic.target(self._layer, _minutes())
-
-    def _schedule_end(self) -> None:
-        self._cancel_end_timer()
-        end = logic.next_end(self._layer)
-        if end is None:
-            return
-        when = datetime.fromtimestamp(end * 60 + 0.5, tz=UTC)
-        self._unsub_end = async_track_point_in_utc_time(self.hass, self._override_ended, when)
-
-    @callback
-    def _cancel_end_timer(self) -> None:
-        if self._unsub_end is not None:
-            self._unsub_end()
-            self._unsub_end = None
-
-    @callback
-    def _override_ended(self, _now: datetime) -> None:
-        self._unsub_end = None
-        self.hass.async_create_task(self._apply())
+        await self._controller.async_command(self._key, "turn_off", kwargs, self._context)
 
 
 def _matches(st: State, want: dict | None) -> bool:
@@ -558,7 +546,3 @@ def _hs_close(want, have) -> bool:
 
 def _tuple(value):
     return tuple(value) if value is not None else None
-
-
-def _iso(minutes: float) -> str:
-    return datetime.fromtimestamp(minutes * 60, tz=UTC).isoformat()
